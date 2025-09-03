@@ -37,9 +37,9 @@ def prep_parser():
     return parser
 
 def get_requests(dataset_name):
-    ds = load_dataset(dataset_name)
     requests = []
     if dataset_name == 'tatsu-lab/alpaca':
+        ds = load_dataset(dataset_name)
         for d in tqdm(ds['train'], desc="Preping requests from dataset"):
             instruction = d['instruction']
             input_txt = d['input']
@@ -53,8 +53,38 @@ def get_requests(dataset_name):
                 r += input_txt
             r += "\n\n### Response:\n"
             requests.append(r)
+    elif dataset_name == 'Aeala/ShareGPT_Vicuna_unfiltered':
+        ds = load_dataset(dataset_name)
+        for d in tqdm(ds['train'], desc="Preping requests from dataset"):
+            chat = []
+            conv = d['conversations']
+            for i in range(len(conv) // 2):
+                chat.append(conv[i]['value'])
+            requests.append(chat)
+    elif dataset_name == 'databricks/databricks-dolly-15k':
+        ds = load_dataset(dataset_name)
+        for d in tqdm(ds['train'], desc="Preping requests from dataset"):
+            r = """Below is an instruction that describes a task,\
+                paired with an input that provides further context.\
+                Write a response that appropriately completes the request.\
+                \n\n### Instruction:\n"""
+            r += d['instruction'] + "\n\n"
+            if len(d['context']) > 0:
+                r += "### Context:\n"
+                r +=  d['context']
+            r += "\n\n### Response:\n"
+            requests.append(r)
+    elif dataset_name == 'cnn_dailymail':
+        ds = load_dataset("cnn_dailymail", "3.0.0")
+        for d in tqdm(ds['train'], desc="Preping requests from dataset"):
+            r = """Below is an article, which should be summarized.\
+                Please write a short text with important highlights of\
+                the article below.\
+                \n\n### Article:\n"""
+            r += d['article'] + "\n"
+            requests.append(r)
 
-    assert len(requests) > 0, f"dataset name not recognized: {dataset_name}"
+    assert len(requests) > 0, f"dataset name not recognized"
 
     return requests
 
@@ -69,7 +99,7 @@ def wait_for_server(timeout=60, retry_interval=2):
                 return True
         except requests.exceptions.ConnectionError:
             pass  # Server not up yet
-        print(f"Waiting for server at {url}...")
+        print(f"Waiting for server at {url_base}...")
         sleep(retry_interval)
     print("Timeout waiting for server.")
     return False
@@ -88,6 +118,9 @@ def submit_request(prompts_batch):
         "max_tokens": 2048,
         "temperature": 0.0
     }
+
+    lens = [isinstance(p, list) for p in prompts_batch]
+    assert not any(lens), "Chatting not yet supported..."
 
     def send_req():
         return requests.post(url_request, headers=headers, json=payload)
