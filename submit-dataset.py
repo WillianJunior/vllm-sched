@@ -147,7 +147,7 @@ def main():
     args = parser.parse_args()
     
     requests = get_requests(args.dataset)
-    requests = requests[:5]
+    requests = requests[:50]
     num_batches = ceil(len(requests) / args.bs)
     futures = []
 
