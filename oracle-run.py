@@ -113,7 +113,7 @@ def wait_for_server(timeout=600, retry_interval=2):
     return False
 
 
-def submit_request(prompts_batch):
+def submit_request(prompts_batch, req_id=None):
     url_request = url_base + "/v1/completions"
     headers = {
         "Content-Type": "application/json",
@@ -135,13 +135,16 @@ def submit_request(prompts_batch):
 
     executor = concurrent.futures.ThreadPoolExecutor()
     future = executor.submit(send_req)
-    return executor, future
+    return req_id, executor, future
 
 def wait_all_requests(futures):
     results = []
-    for _executor, future in tqdm(futures, desc="Waiting for returning reqs"):
+    for req_id, _executor, future in tqdm(futures, desc="Waiting for returning reqs"):
         result = future.result()
-        results.append(result)
+        if req_id is not None:
+            results.append((req_id, get_completion_tokens(result)))
+        else:
+            results.append(result)
     return results
 
 def write_stats(results):
@@ -149,6 +152,13 @@ def write_stats(results):
         assert r.status_code == 200
         #print(r.json()) nothing yet...
         #return
+
+def get_completion_tokens(result):
+    # Returns the total number of tokens from the sequence
+    # This includes 'prompt_tokens' and 'completion_tokens'
+    #return result.json()['usage']['total_tokens']
+    return result.json()['usage']['completion_tokens']
+
 
 def main():
     parser = prep_parser()
@@ -158,13 +168,38 @@ def main():
     #requests = requests[:50]
     if args.max_batches > 0:
         num_batches = args.max_batches
+        total_requests = num_batches * args.bs
+        requests = requests[:total_requests]
     else:
         num_batches = ceil(len(requests) / args.bs)
     futures = []
 
     assert wait_for_server(), "Couldn't connect to vLLM server."
 
+    
+    # Send all requests for a first run
+    t0 = time()
+    for i in range(len(requests)):
+        request = requests[i]
+        futures.append(submit_request(request, i))
+    results = wait_all_requests(futures)
+    t1 = time()
+    print(f'Done training in {t1-t0}')
+
+    # Sort result list by idx
+    costs = [c for i, c in sorted(results)]
+    # Sort requests list
+    sorted_requests = [x for _, x in sorted(zip(costs, requests), reverse=True)]
+    requests = sorted_requests
+    print(f'Min tokens: {min(costs)}')
+    print(f'Avg tokens: {sum(costs)/len(costs):.2f}')
+    print(f'Max tokens: {max(costs)}')
+
+
+
+    futures = []
     # Submit each batch of requests
+    t0 = time()
     for b in tqdm(range(num_batches), total=num_batches, desc="Sending batches"):
         init = b * args.bs
         end = init + args.bs + 1
@@ -175,7 +210,12 @@ def main():
             sleep(args.interval)
 
     results = wait_all_requests(futures)
-    write_stats(results)
+    t1 = time()
+    print(f'Done all in {t1-t0}')
+
+
+    #print(results[0].json()['usage']['completion_tokens'])
+    #write_stats(results)
 
 
 if __name__ == '__main__':
