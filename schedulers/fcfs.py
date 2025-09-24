@@ -1,8 +1,16 @@
+from typing import Any, Optional, Union
+from collections import defaultdict
+from collections.abc import Iterable
+import time
+
 from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.engine import EngineCoreOutputs
 from vllm.v1.request import Request, RequestStatus
+from vllm.v1.kv_cache_interface import KVCacheConfig
+from vllm.v1.structured_output import StructuredOutputManager
+from vllm.config import VllmConfig
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 
 class MyFCFSSched(SchedulerInterface):
@@ -20,13 +28,15 @@ class MyFCFSSched(SchedulerInterface):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
-        print(f"=============== init")
-        print(f"\t vllm_config: {vllm_config}")
-        print(f"\t kv_cache_config: {kv_cache_config}")
-        print(f"\t structured_output_manager: {structured_output_manager}")
-        print(f"\t mm_registry: {mm_registry}")
-        print(f"\t include_finished_set: {include_finished_set}")
-        print(f"\t log_stats: {log_stats}")
+        #print(f"=============== init")
+        #print(f"\t vllm_config: {vllm_config}")
+        #print(f"\t kv_cache_config: {kv_cache_config}")
+        #print(f"\t structured_output_manager: {structured_output_manager}")
+        #print(f"\t mm_registry: {mm_registry}")
+        #print(f"\t include_finished_set: {include_finished_set}")
+        #print(f"\t log_stats: {log_stats}")
+
+        self.queue = []
 
 
     def schedule(self) -> SchedulerOutput:
@@ -52,7 +62,33 @@ class MyFCFSSched(SchedulerInterface):
             A SchedulerOutput object containing information about the scheduled
             requests.
         """
-        raise NotImplementedError
+
+        scheduled_new_reqs: list[Request] = []
+        scheduled_resumed_reqs: list[Request] = []
+        scheduled_running_reqs: list[Request] = []
+        preempted_reqs: list[Request] = []
+
+
+
+        scheduler_output = SchedulerOutput(
+            scheduled_new_reqs=new_reqs_data,
+            scheduled_cached_reqs=cached_reqs_data,
+            num_scheduled_tokens=num_scheduled_tokens,
+            total_num_scheduled_tokens=total_num_scheduled_tokens,
+            scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
+            scheduled_encoder_inputs=scheduled_encoder_inputs,
+            num_common_prefix_blocks=num_common_prefix_blocks,
+            # finished_req_ids is an existing state in the scheduler,
+            # instead of being newly scheduled in this step.
+            # It contains the request IDs that are finished in between
+            # the previous and the current steps.
+            finished_req_ids=self.finished_req_ids,
+            free_encoder_input_ids=self.encoder_cache_manager.get_freed_ids(),
+            structured_output_request_ids=structured_output_request_ids,
+            grammar_bitmask=grammar_bitmask,
+        )
+
+        return scheduler_output
 
 
     def update_from_output(
@@ -137,7 +173,7 @@ class MyFCFSSched(SchedulerInterface):
         raise NotImplementedError
 
 
-    def make_stats(self) -> Optional["SchedulerStats"]:
+    def make_stats(self) -> Optional[SchedulerStats]:
         """Make a SchedulerStats object for logging.
 
         The SchedulerStats object is created for every scheduling step.
