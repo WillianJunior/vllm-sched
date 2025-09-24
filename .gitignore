@@ -1,3 +1,10 @@
+# mine....
+env/*
+!env/.gitkeep
+datasets/*
+!datasets/.gitkeep
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
