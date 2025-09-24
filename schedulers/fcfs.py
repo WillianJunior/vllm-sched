@@ -4,12 +4,18 @@ from collections.abc import Iterable
 import time
 
 from vllm.v1.core.sched.interface import SchedulerInterface
-from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.core.sched.output import SchedulerOutput, NewRequestData, CachedRequestData
+from vllm.v1.core.sched.request_queue import (
+    SchedulingPolicy,
+    create_request_queue,
+)
+from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.engine import EngineCoreOutputs
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.structured_output import StructuredOutputManager
+from vllm.v1.metrics.stats import SchedulerStats
 from vllm.config import VllmConfig
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 
@@ -44,14 +50,35 @@ class MyFCFSSched(SchedulerInterface):
         self.queue = []
 
         # TODO: initialize...
-        self.running
-        self.waiting
-        self.max_num_running_reqs
-        self.max_num_scheduled_tokens
-        self.finished_req_ids
-        self.scheduler_config
-        self.kv_cache_manager
-        self.log_stats
+        self.scheduler_config = vllm_config.scheduler_config
+        self.cache_config = vllm_config.cache_config
+        self.log_stats = log_stats
+
+
+        self.waiting = create_request_queue(SchedulingPolicy.FCFS)
+        self.running: list[Request] = []
+
+        self.max_num_running_reqs = self.scheduler_config.max_num_seqs
+        self.max_num_scheduled_tokens = (
+            self.scheduler_config.max_num_batched_tokens
+        )
+        self.max_model_len = self.scheduler_config.max_model_len
+
+        # The request IDs that are finished in between the previous and the
+        # current steps. This is used to notify the workers about the finished
+        # requests so that they can free the cached states for those requests.
+        # This is flushed at the end of each scheduling step.
+        self.finished_req_ids: set[RequestID] = set()
+
+        # Create the KV cache manager.
+        self.kv_cache_manager = KVCacheManager(
+            kv_cache_config=kv_cache_config,
+            max_model_len=self.max_model_len,
+            enable_caching=self.cache_config.enable_prefix_caching,
+            #use_eagle=self.use_eagle,
+            log_stats=self.log_stats,
+            #enable_kv_cache_events=self.enable_kv_cache_events,
+        )
 
     def schedule(self) -> SchedulerOutput:
         """Schedule the requests to process in this scheduling step.
@@ -177,7 +204,7 @@ class MyFCFSSched(SchedulerInterface):
 
         # Use a temporary RequestQueue to collect requests that need to be
         # skipped and put back at the head of the waiting queue later
-        # skipped_waiting_requests = []
+        skipped_waiting_requests = create_request_queue(SchedulingPolicy.FCFS)
 
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
@@ -520,9 +547,7 @@ class MyFCFSSched(SchedulerInterface):
         """Returns (num_running_reqs, num_waiting_reqs)."""
         raise NotImplementedError
 
-    def make_stats(
-        self, spec_decoding_stats: Optional[SpecDecodingStats] = None
-    ) -> Optional[SchedulerStats]:
+    def make_stats(self) -> Optional[SchedulerStats]:
         """Make a SchedulerStats object for logging.
 
         The SchedulerStats object is created for every scheduling step.
@@ -536,7 +561,7 @@ class MyFCFSSched(SchedulerInterface):
             num_waiting_reqs=len(self.waiting),
             kv_cache_usage=self.kv_cache_manager.usage,
             prefix_cache_stats=prefix_cache_stats,
-            spec_decoding_stats=spec_decoding_stats,
+            #spec_decoding_stats=spec_decoding_stats,
             num_corrupted_reqs=sum(
                 req.is_output_corrupted for req in self.running
             ),
