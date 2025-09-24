@@ -1,9 +1,7 @@
 from vllm.v1.core.sched.interface import SchedulerInterface
-from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
-                                       SchedulerOutput)
+from vllm.v1.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
 from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
-from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
-                            EngineCoreOutputs)
+from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 
 
 class MyFCFSSched(SchedulerInterface):
@@ -12,9 +10,22 @@ class MyFCFSSched(SchedulerInterface):
     Should be similar (if not the same) as vLLM base scheduler...
     """
 
-    def __init__(self, arg):
-        super(MyFCFSSched, self).__init__()
-        self.arg = arg
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        kv_cache_config: KVCacheConfig,
+        structured_output_manager: StructuredOutputManager,
+        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+        include_finished_set: bool = False,
+        log_stats: bool = False,
+    ) -> None:
+        print(f"=============== init")
+        print(f"\t vllm_config: {vllm_config}")
+        print(f"\t kv_cache_config: {kv_cache_config}")
+        print(f"\t structured_output_manager: {structured_output_manager}")
+        print(f"\t mm_registry: {mm_registry}")
+        print(f"\t include_finished_set: {include_finished_set}")
+        print(f"\t log_stats: {log_stats}")
 
     def schedule(self) -> SchedulerOutput:
         """Schedule the requests to process in this scheduling step.
@@ -88,7 +99,3 @@ class MyFCFSSched(SchedulerInterface):
     def shutdown(self) -> None:
         """Shutdown the scheduler."""
         raise NotImplementedError
-
-
-
-
