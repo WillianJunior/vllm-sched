@@ -7,17 +7,17 @@ from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
 
 
 class MyFCFSSched(SchedulerInterface):
-	"""
-	Experimenting with vLLM schedulers.
-	Should be similar (if not the same) as vLLM base scheduler...
-	"""
+    """
+    Experimenting with vLLM schedulers.
+    Should be similar (if not the same) as vLLM base scheduler...
+    """
 
-	def __init__(self, arg):
-		super(MyFCFSSched, self).__init__()
-		self.arg = arg
+    def __init__(self, arg):
+        super(MyFCFSSched, self).__init__()
+        self.arg = arg
 
-	def schedule(self) -> SchedulerOutput:
-		"""Schedule the requests to process in this scheduling step.
+    def schedule(self) -> SchedulerOutput:
+        """Schedule the requests to process in this scheduling step.
 
         The scheduling decision is made at the iteration level. Each scheduling
         step corresponds to a single forward pass of the model. Therefore, this
@@ -41,7 +41,7 @@ class MyFCFSSched(SchedulerInterface):
         """
         raise NotImplementedError
 
-	def update_from_output(
+    def update_from_output(
         self,
         scheduler_output: SchedulerOutput,
         model_runner_output: ModelRunnerOutput,
