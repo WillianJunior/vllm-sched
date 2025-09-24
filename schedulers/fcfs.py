@@ -3,6 +3,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.engine import EngineCoreOutputs
 from vllm.v1.request import Request, RequestStatus
+from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 
 class MyFCFSSched(SchedulerInterface):
     """
