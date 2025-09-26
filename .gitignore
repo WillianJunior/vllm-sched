@@ -3,7 +3,7 @@ env/*
 !env/.gitkeep
 datasets/*
 !datasets/.gitkeep
-
+vllm
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
