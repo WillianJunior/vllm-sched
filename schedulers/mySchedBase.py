@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import itertools
+from enum import Enum
 import time
 from collections import deque
 from collections import defaultdict
@@ -46,9 +47,6 @@ from vllm.v1.outputs import KVConnectorOutput, ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
-
-# My priority queues:
-from rr import RRRequestQueue
 
 logger = init_logger(__name__)
 
@@ -144,8 +142,8 @@ class MyFCFSSched(SchedulerInterface):
         self.running: list[Request] = []
 
         # Default quantum preemption policy configurations
-        self.quantum_preempt_policy = QuantumPreemptionPolicy.NONE
-        self.base_quantum = 5  # in sched steps
+        self.quantum_preempt_policy = QuantumPreemptionPolicy.RR
+        self.base_quantum = 150  # in sched steps
         self.running_quantum_steps: list[Request] = []
 
         # TODO: get these values from config...
@@ -240,9 +238,10 @@ class MyFCFSSched(SchedulerInterface):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
-        print(f"===========[schedule] start_at {scheduled_timestamp}")
+        #print(f"===========[schedule] start_at {scheduled_timestamp}")
 
         # First, schedule the RUNNING requests.
+        num_quantum_preemptions = 0
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
@@ -298,21 +297,21 @@ class MyFCFSSched(SchedulerInterface):
                 # we do not strictly follow the FCFS scheduling policy and
                 # allow the lower-priority requests to be scheduled.
                 req_index += 1
-                print(
-                    f"===========[schedule][running] "
-                    f"num_new_tokens=0: {request}"
-                )
+                #print(
+                #    f"===========[schedule][running] "
+                #    f"num_new_tokens=0: {request}"
+                #)
                 continue
 
             # Check preemption for quantum time passed
             if self.quantum_preempt_policy != QuantumPreemptionPolicy.NONE:
-                if self.running_quantum_steps[req_id] >= self.base_quantum:
+                if self.running_quantum_steps[req_index] >= self.base_quantum:
                     self.running_quantum_steps.pop()
                     preempted_req = self.running.pop()
-                    print(
-                        f"===========[schedule][running][quantum] "
-                        f"preempting: {preempted_req}"
-                    )
+                    #print(
+                    #    f"===========[schedule][running][quantum] "
+                    #    f"preempting: {preempted_req}"
+                    #)
                     preempted_req.status = RequestStatus.PREEMPTED
                     preempted_req.num_computed_tokens = 0
                     if self.log_stats:
@@ -325,9 +324,11 @@ class MyFCFSSched(SchedulerInterface):
                     # Request added to the queue to allow the insertion
                     # policy.
                     self.waiting.add_request(preempted_req)
+                    num_quantum_preemptions += 1
+                    continue
                 else:
                     # Will run again for another step
-                    self.running_quantum_steps[req_id] += 1
+                    self.running_quantum_steps[req_index] += 1
 
             # Attempt allocation for the tokens to be decoded at this steo
             while True:
@@ -377,17 +378,17 @@ class MyFCFSSched(SchedulerInterface):
                     can_schedule = True
                     break
             if not can_schedule:
-                print(
-                    f"===========[schedule][running] "
-                    f"cannot_allocate_blocks {request}"
-                )
+                #print(
+                #    f"===========[schedule][running] "
+                #    f"cannot_allocate_blocks {request}"
+                #)
 
                 break
             assert new_blocks is not None
 
             # Schedule the request.
             scheduled_running_reqs.append(request)
-            print(f"===========[schedule][running] scheduling {request}")
+            #print(f"===========[schedule][running] scheduling {request}")
 
             if request.use_structured_output:
                 # PERF: in case of chunked prefill,
@@ -447,7 +448,7 @@ class MyFCFSSched(SchedulerInterface):
                     break
 
                 request = self.waiting.peek_request()
-                print(f"===========[schedule][waiting] trying {request}")
+                #print(f"===========[schedule][waiting] trying {request}")
 
                 # KVTransfer: skip request if still waiting for remote kvs.
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -613,7 +614,7 @@ class MyFCFSSched(SchedulerInterface):
                 # Request was already popped from self.waiting
                 # unless it was re-added above due to new_blocks being None.
                 request = self.waiting.pop_request()
-                print(f"===========[schedule][waiting] running {request}")
+                #print(f"===========[schedule][waiting] running {request}")
                 if load_kv_async:
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
@@ -744,6 +745,14 @@ class MyFCFSSched(SchedulerInterface):
             self.kv_event_publisher.publish(batch)
 
         self._update_after_schedule(scheduler_output)
+        
+        if num_quantum_preemptions > 0:
+            print(
+                f"===========[schedule][quantum] at {scheduled_timestamp}, "
+                f"preemptions: {num_quantum_preemptions}"
+            )
+
+
         return scheduler_output
 
     def _update_after_schedule(
@@ -1144,7 +1153,7 @@ class MyFCFSSched(SchedulerInterface):
         return len(self.running), len(self.waiting)
 
     def add_request(self, request: Request) -> None:
-        print(f"===========[add_request] {request}")
+        #print(f"===========[add_request] {request}")
         self.waiting.add_request(request)
         self.requests[request.request_id] = request
         if self.log_stats:
