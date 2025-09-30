@@ -312,14 +312,14 @@ class MyFCFSSched(SchedulerInterface):
                     #    f"===========[schedule][running][quantum] "
                     #    f"preempting: {preempted_req}"
                     #)
-                    preempted_req.status = RequestStatus.PREEMPTED
+                    preempted_req.status = RequestStatus.QUEUED
                     preempted_req.num_computed_tokens = 0
                     if self.log_stats:
                         preempted_req.record_event(
-                            EngineCoreEventType.PREEMPTED, scheduled_timestamp
+                            EngineCoreEventType.QUEUED, scheduled_timestamp
                         )
                     self.kv_cache_manager.free(preempted_req)
-                    preempted_reqs.append(preempted_req)
+                    # preempted_reqs.append(preempted_req)
 
                     # Request added to the queue to allow the insertion
                     # policy.
