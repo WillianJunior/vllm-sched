@@ -179,7 +179,7 @@ class SchedulerOutputs:
         return (
             not self.scheduled_seq_groups
             and not self.blocks_to_swap_in
-            and not self.blocks_to_swap_out
+            #and not self.blocks_to_swap_out
             and not self.blocks_to_copy
         )
 
@@ -693,7 +693,7 @@ class Scheduler:
         """If max_num_seqs seqs are running  and there are seqs waiting, or
         if there are OOM swapped-out seqs waiting.
         """
-        return (len(self.waiting) + len(self.swapped)) == 0
+        return (len(self.waiting) + len(self.swapped)) > 0
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_manager.get_prefix_cache_hit_rate(device)
@@ -813,7 +813,7 @@ class Scheduler:
                 self.has_waiting_seqs()
                 and seq_group.spent_quantum >= self.quantum
             ):
-                print(f"========= [quantum] swap-out {seq_group}")
+                print(f"========= [quantum] swap-out {seq_group} after {seq_group.spent_quantum} with waiting queue {len(self.waiting)}")
                 # With async postprocessor, before preempting a sequence
                 # we need to ensure it has no pending async postprocessor
                 do_preempt = True
@@ -1233,7 +1233,7 @@ class Scheduler:
             seq_group = waiting_queue[0]
 
             if seq_group.was_quantumd_out:
-                print(f"========= [quantum] swap-in trying {seq_group}")
+                #print(f"========= [quantum] swap-in trying {seq_group}")
 
                 is_prefill = seq_group.is_prefill()
                 alloc_status = self.block_manager.can_swap_in(
@@ -1248,6 +1248,14 @@ class Scheduler:
                 ), "if happens, need to fix. check _schedule_swapped"
                 assert self.lora_enabled == False, "not supporting lora"
 
+                # The total number of sequences in the RUNNING state should not
+                # exceed the maximum number of sequences.
+                num_new_seqs = seq_group.get_max_num_running_seqs()
+                num_new_tokens_uncached, num_new_tokens_cached = (
+                    self._get_num_new_uncached_and_cached_tokens(
+                        seq_group, SequenceStatus.SWAPPED, enable_chunking,
+                        budget))
+
                 if num_new_tokens_uncached == 0 or not budget.can_schedule(
                         num_new_tokens=num_new_tokens_uncached,
                         num_new_seqs=num_new_seqs,
@@ -1260,7 +1268,7 @@ class Scheduler:
 
 
                 # We CAN swap the seq in
-                print(f"========= [quantum] swap-in: can do... {seq_group}")
+                #print(f"========= [quantum] swap-in: can do... {seq_group}")
                 seq_group.was_quantumd_out = False
                 seq_group.spent_quantum = 1 # this is the first token scheduled
                 waiting_queue.popleft()
@@ -1643,6 +1651,9 @@ class Scheduler:
         inter token latency because decodes requests don't need to be blocked
         by prefill requests.
         """
+
+        #print("xxxxxxxxxxxxxxxxxxxxxxx sched start xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1755,6 +1766,19 @@ class Scheduler:
             if (all_prefills and not self.scheduler_config.is_multi_step)
             else running_scheduled.num_lookahead_slots
         )
+        
+        #print(f"len(scheduled_seq_groups): {len(scheduled_seq_groups)}")
+        #print(f"num_prefill_groups: {num_prefill_groups}")
+        #print(f"ignored_seq_groups: {len(prefills.ignored_seq_groups+swapped_in.infeasible_seq_groups)}")
+        #print(f"preempted: {len(running_scheduled.preempted) + len(running_scheduled.swapped_out)}")
+        #print(f"prefills.seq_groups: {len(prefills.seq_groups)}")
+        #print(f"running_scheduled.prefill_seq_groups: {len(running_scheduled.prefill_seq_groups)}")
+        #print(f"swapped_in.prefill_seq_groups: {len(swapped_in.prefill_seq_groups)}")
+        #print(f"running_scheduled.decode_seq_groups: {len(running_scheduled.decode_seq_groups)}")
+        #print(f"swapped_in.decode_seq_groups: {len(swapped_in.decode_seq_groups)}")
+
+        #print("xxxxxxxxxxxxxxxxxxxxxxx sched end xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+
         return SchedulerOutputs(
             scheduled_seq_groups=scheduled_seq_groups,
             num_prefill_groups=num_prefill_groups,
@@ -2190,6 +2214,9 @@ class Scheduler:
     ) -> None:
         mapping = self.block_manager.swap_in(seq_group)
         blocks_to_swap_in.extend(mapping)
+        num_blocks = 0;
+        for seq in seq_group.get_seqs(status=SequenceStatus.SWAPPED):
+            num_blocks += len(self.block_manager.block_tables[seq.seq_id].blocks)
         for seq in seq_group.get_seqs(status=SequenceStatus.SWAPPED):
             seq.status = SequenceStatus.RUNNING
 

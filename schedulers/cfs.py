@@ -793,8 +793,9 @@ class Scheduler:
             # NOTE(woosuk): Preemption happens only when there is no available
             # slot to keep all the sequence groups in the RUNNING state.
             while not self._can_append_slots(seq_group, enable_chunking) or (
-                count == 0 and seq_group.spent_quantum > 20
+                count == 0 and seq_group.spent_quantum > 20 and len(running_queue) > 0
             ):
+                print("=========== swap out -----------------")
                 budget.subtract_num_batched_tokens(
                     seq_group.request_id, num_running_tokens
                 )
@@ -981,6 +982,7 @@ class Scheduler:
             if lora_int_id > 0 and curr_loras is not None:
                 curr_loras.add(lora_int_id)
             swapped_queue.popleft()
+            print("------------ swap in =====================")
             self._swap_in(seq_group, blocks_to_swap_in)
             self._append_slots(seq_group, blocks_to_copy, enable_chunking)
             if is_prefill:
@@ -1522,6 +1524,9 @@ class Scheduler:
         inter token latency because decodes requests don't need to be blocked
         by prefill requests.
         """
+
+        print("xxxxxxxxxxxxxxxxxxxxxxx sched start xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1619,6 +1624,9 @@ class Scheduler:
             if (all_prefills and not self.scheduler_config.is_multi_step)
             else running_scheduled.num_lookahead_slots
         )
+
+        print("xxxxxxxxxxxxxxxxxxxxxxx sched end xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+
         return SchedulerOutputs(
             scheduled_seq_groups=scheduled_seq_groups,
             num_prefill_groups=num_prefill_groups,
