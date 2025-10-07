@@ -319,7 +319,7 @@ class MyFCFSSched(SchedulerInterface):
                             EngineCoreEventType.QUEUED, scheduled_timestamp
                         )
                     self.kv_cache_manager.free(preempted_req)
-                    # preempted_reqs.append(preempted_req)
+                    preempted_reqs.append(preempted_req)
 
                     # Request added to the queue to allow the insertion
                     # policy.

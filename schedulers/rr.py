@@ -520,8 +520,11 @@ class Scheduler:
         self.prev_prompt = False
         # Latency of the last prompt step
         self.last_prompt_latency = 0.0
+
+        # [Will]: we are only doing recompute on OOM
         # preemption mode, RECOMPUTE or SWAP
-        self.user_specified_preemption_mode = scheduler_config.preemption_mode
+        # self.user_specified_preemption_mode = scheduler_config.preemption_mode
+        self.user_specified_preemption_mode = PreemptionMode.RECOMPUTE
 
         # The following field is test-only. It is used to inject artificial
         # preemption.
@@ -580,7 +583,7 @@ class Scheduler:
             )
 
         # RR stuff
-        self.quantum = 5
+        self.quantum = 20
 
     @property
     def next_cache_id(self):
@@ -759,6 +762,8 @@ class Scheduler:
             ScheduledSequenceGroup
         ] = ret.prefill_seq_groups
         preempted: List[SequenceGroup] = ret.preempted
+
+        # [Will]: only quantum seqs are swapped out
         swapped_out: List[SequenceGroup] = ret.swapped_out
 
         running_queue = self.running
@@ -808,6 +813,7 @@ class Scheduler:
                 self.has_waiting_seqs()
                 and seq_group.spent_quantum >= self.quantum
             ):
+                print(f"========= [quantum] swap-out {seq_group}")
                 # With async postprocessor, before preempting a sequence
                 # we need to ensure it has no pending async postprocessor
                 do_preempt = True
@@ -824,7 +830,6 @@ class Scheduler:
                 # Do preemption if there are no async pending
                 if do_preempt:
                     self._swap_out(seq_group, blocks_to_swap_out)
-                    seq_group.spent_quantum = 0
                     seq_group.was_quantumd_out = True
                     swapped_out.append(seq_group)
 
@@ -879,10 +884,12 @@ class Scheduler:
                     preempted_mode = self._preempt(
                         victim_seq_group, blocks_to_swap_out
                     )
-                    if preempted_mode == PreemptionMode.RECOMPUTE:
-                        preempted.append(victim_seq_group)
-                    else:
-                        swapped_out.append(victim_seq_group)
+
+                    # [Will]: we are only doing recompute on OOM
+                    # if preempted_mode == PreemptionMode.RECOMPUTE:
+                    preempted.append(victim_seq_group)
+                    # else:
+                    # swapped_out.append(victim_seq_group)
 
                 if not cont_loop:
                     break
@@ -924,107 +931,6 @@ class Scheduler:
 
         return ret
 
-    def _schedule_single_swapped(
-        self,
-        seq_group,
-        queue,
-        blocks_to_swap_in,
-        blocks_to_copy,
-        decode_seq_groups,
-        prefill_seq_groups,
-        infeasible_seq_groups,
-        leftover_swapped,
-        enable_chunking,
-    ):
-        """Schedule a single swapped seq, either from swapped or waiting queues
-        Returns False if it should break the loop (used for schedule_swapped).
-        """
-
-        # If the sequence group cannot be swapped in, stop.
-        is_prefill = seq_group.is_prefill()
-        alloc_status = self.block_manager.can_swap_in(
-            seq_group,
-            self._get_num_lookahead_slots(is_prefill, enable_chunking),
-        )
-        if alloc_status == AllocStatus.LATER:
-            # break
-            return False
-        elif alloc_status == AllocStatus.NEVER:
-            logger.warning(
-                "Failing the request %s because there's not enough kv "
-                "cache blocks to run the entire sequence.",
-                seq_group.request_id,
-            )
-            for seq in seq_group.get_seqs():
-                seq.status = SequenceStatus.FINISHED_IGNORED
-            infeasible_seq_groups.append(seq_group)
-            queue.popleft()
-            # continue
-            return True
-
-        lora_int_id = 0
-        if self.lora_enabled:
-            lora_int_id = seq_group.lora_int_id
-            assert curr_loras is not None
-            assert self.lora_config is not None
-            if (
-                lora_int_id > 0
-                and (lora_int_id not in curr_loras)
-                and len(curr_loras) >= self.lora_config.max_loras
-            ):
-                # We don't have a space for another LoRA, so
-                # we ignore this request for now.
-                leftover_swapped.appendleft(seq_group)
-                queue.popleft()
-                # continue
-                return True
-
-        # The total number of sequences in the RUNNING state should not
-        # exceed the maximum number of sequences.
-        num_new_seqs = seq_group.get_max_num_running_seqs()
-        (
-            num_new_tokens_uncached,
-            num_new_tokens_cached,
-        ) = self._get_num_new_uncached_and_cached_tokens(
-            seq_group, SequenceStatus.SWAPPED, enable_chunking, budget
-        )
-
-        if num_new_tokens_uncached == 0 or not budget.can_schedule(
-            num_new_tokens=num_new_tokens_uncached,
-            num_new_seqs=num_new_seqs,
-        ):
-            self.remove_seq_from_computed_blocks_tracker(
-                seq_group, SequenceStatus.SWAPPED
-            )
-            return False
-            # break
-
-        if lora_int_id > 0 and curr_loras is not None:
-            curr_loras.add(lora_int_id)
-        queue.popleft()
-        self._swap_in(seq_group, blocks_to_swap_in)
-        self._append_slots(seq_group, blocks_to_copy, enable_chunking)
-        if is_prefill:
-            prefill_seq_groups.append(
-                ScheduledSequenceGroup(
-                    seq_group,
-                    token_chunk_size=num_new_tokens_uncached
-                    + num_new_tokens_cached,
-                )
-            )
-        else:
-            decode_seq_groups.append(
-                ScheduledSequenceGroup(seq_group, token_chunk_size=1)
-            )
-        budget.add_num_batched_tokens(
-            seq_group.request_id,
-            num_batched_tokens=num_new_tokens_uncached,
-            num_cached_tokens=num_new_tokens_cached,
-        )
-        budget.add_num_seqs(seq_group.request_id, num_new_seqs)
-
-        return True
-
     def _schedule_swapped(
         self,
         budget: SchedulingBudget,
@@ -1063,18 +969,84 @@ class Scheduler:
         while swapped_queue:
             seq_group = swapped_queue[0]
 
-            if not self._schedule_single_swapped(
+            # If the sequence group cannot be swapped in, stop.
+            is_prefill = seq_group.is_prefill()
+            alloc_status = self.block_manager.can_swap_in(
                 seq_group,
-                swapped_queue,
-                blocks_to_swap_in,
-                blocks_to_copy,
-                decode_seq_groups,
-                prefill_seq_groups,
-                infeasible_seq_groups,
-                leftover_swapped,
-                enable_chunking,
-            ):
+                self._get_num_lookahead_slots(is_prefill, enable_chunking),
+            )
+            if alloc_status == AllocStatus.LATER:
                 break
+            elif alloc_status == AllocStatus.NEVER:
+                logger.warning(
+                    "Failing the request %s because there's not enough kv "
+                    "cache blocks to run the entire sequence.",
+                    seq_group.request_id,
+                )
+                for seq in seq_group.get_seqs():
+                    seq.status = SequenceStatus.FINISHED_IGNORED
+                infeasible_seq_groups.append(seq_group)
+                swapped_queue.popleft()
+                continue
+
+            lora_int_id = 0
+            if self.lora_enabled:
+                lora_int_id = seq_group.lora_int_id
+                assert curr_loras is not None
+                assert self.lora_config is not None
+                if (
+                    lora_int_id > 0
+                    and (lora_int_id not in curr_loras)
+                    and len(curr_loras) >= self.lora_config.max_loras
+                ):
+                    # We don't have a space for another LoRA, so
+                    # we ignore this request for now.
+                    leftover_swapped.appendleft(seq_group)
+                    swapped_queue.popleft()
+                    continue
+
+            # The total number of sequences in the RUNNING state should not
+            # exceed the maximum number of sequences.
+            num_new_seqs = seq_group.get_max_num_running_seqs()
+            (
+                num_new_tokens_uncached,
+                num_new_tokens_cached,
+            ) = self._get_num_new_uncached_and_cached_tokens(
+                seq_group, SequenceStatus.SWAPPED, enable_chunking, budget
+            )
+
+            if num_new_tokens_uncached == 0 or not budget.can_schedule(
+                num_new_tokens=num_new_tokens_uncached,
+                num_new_seqs=num_new_seqs,
+            ):
+                self.remove_seq_from_computed_blocks_tracker(
+                    seq_group, SequenceStatus.SWAPPED
+                )
+                break
+
+            if lora_int_id > 0 and curr_loras is not None:
+                curr_loras.add(lora_int_id)
+            swapped_queue.popleft()
+            self._swap_in(seq_group, blocks_to_swap_in)
+            self._append_slots(seq_group, blocks_to_copy, enable_chunking)
+            if is_prefill:
+                prefill_seq_groups.append(
+                    ScheduledSequenceGroup(
+                        seq_group,
+                        token_chunk_size=num_new_tokens_uncached
+                        + num_new_tokens_cached,
+                    )
+                )
+            else:
+                decode_seq_groups.append(
+                    ScheduledSequenceGroup(seq_group, token_chunk_size=1)
+                )
+            budget.add_num_batched_tokens(
+                seq_group.request_id,
+                num_batched_tokens=num_new_tokens_uncached,
+                num_cached_tokens=num_new_tokens_cached,
+            )
+            budget.add_num_seqs(seq_group.request_id, num_new_seqs)
 
         swapped_queue.extendleft(leftover_swapped)
 
@@ -1206,10 +1178,9 @@ class Scheduler:
         curr_loras: Optional[Set[int]],
         enable_chunking: bool = False,
         partial_prefill_metadata: Optional[PartialPrefillMetadata] = None,
-    ) -> SchedulerPrefillOutputs:
+    ) -> (SchedulerPrefillOutputs, SchedulerSwappedInOutputs):
         """Schedule sequence groups that are in prefill stage
         or were swapped-out due to quantum.
-
 
         Note that the current scheduler treats PREEMPTED_FOR_RECOMPUTE
         as a new prefill (that starts from beginning -> most recently generated
@@ -1244,7 +1215,6 @@ class Scheduler:
                 ),
             )
 
-        
         ignored_seq_groups: List[SequenceGroup] = []
         seq_groups: List[ScheduledSequenceGroup] = []
         using_prompt_embeds: bool = False
@@ -1263,21 +1233,58 @@ class Scheduler:
             seq_group = waiting_queue[0]
 
             if seq_group.was_quantumd_out:
-                # self._schedule_single_swapped(
-                #     seq_group,
-                #     waiting_queue,
-                #     blocks_to_swap_in,
-                #     blocks_to_copy,
-                #     decode_seq_groups,
-                #     prefill_seq_groups,
-                #     infeasible_seq_groups,
-                #     leftover_waiting_sequences,
-                #     enable_chunking,
-                # )
-                # self._schedule_single_swapped(seq_group)
+                print(f"========= [quantum] swap-in trying {seq_group}")
 
+                is_prefill = seq_group.is_prefill()
+                alloc_status = self.block_manager.can_swap_in(
+                    seq_group,
+                    self._get_num_lookahead_slots(is_prefill, enable_chunking),
+                )
+                assert (
+                    is_prefill != AllocStatus.LATER
+                ), "if happens, need to fix. check _schedule_swapped"
+                assert (
+                    alloc_status != AllocStatus.NEVER
+                ), "if happens, need to fix. check _schedule_swapped"
+                assert self.lora_enabled == False, "not supporting lora"
+
+                if num_new_tokens_uncached == 0 or not budget.can_schedule(
+                        num_new_tokens=num_new_tokens_uncached,
+                        num_new_seqs=num_new_seqs,
+                ):
+                    self.remove_seq_from_computed_blocks_tracker(
+                        seq_group, SequenceStatus.SWAPPED)
+                    # No more scheduling until there is space 
+                    # for the head of line. Fairness...
+                    break 
+
+
+                # We CAN swap the seq in
+                print(f"========= [quantum] swap-in: can do... {seq_group}")
                 seq_group.was_quantumd_out = False
-                seq_group.spent_quantum = 1
+                seq_group.spent_quantum = 1 # this is the first token scheduled
+                waiting_queue.popleft()
+
+                # Perform swap-in
+                self._swap_in(seq_group, blocks_to_swap_in)
+                self._append_slots(seq_group, blocks_to_copy, enable_chunking)
+
+                if is_prefill:
+                    prefill_seq_groups.append(
+                        ScheduledSequenceGroup(
+                            seq_group,
+                            token_chunk_size=num_new_tokens_uncached +
+                            num_new_tokens_cached,
+                        ))
+                else:
+                    decode_seq_groups.append(
+                        ScheduledSequenceGroup(seq_group, token_chunk_size=1))
+                budget.add_num_batched_tokens(
+                    seq_group.request_id,
+                    num_batched_tokens=num_new_tokens_uncached,
+                    num_cached_tokens=num_new_tokens_cached,
+                )
+                budget.add_num_seqs(seq_group.request_id, num_new_seqs)
                 continue
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
@@ -1455,13 +1462,24 @@ class Scheduler:
         if len(seq_groups) > 0:
             self.prev_prompt = True
 
-        return SchedulerPrefillOutputs(
+        prefill_ret = SchedulerPrefillOutputs(
             seq_groups=seq_groups,
             ignored_seq_groups=ignored_seq_groups,
             num_lookahead_slots=self._get_num_lookahead_slots(
                 is_prefill=True, enable_chunking=enable_chunking
             ),
         )
+        swapped_in_ret = SchedulerSwappedInOutputs(
+            decode_seq_groups=decode_seq_groups,
+            prefill_seq_groups=prefill_seq_groups,
+            blocks_to_swap_in=blocks_to_swap_in,
+            blocks_to_copy=blocks_to_copy,
+            num_lookahead_slots=self._get_num_lookahead_slots(
+                is_prefill=False, enable_chunking=enable_chunking),
+            infeasible_seq_groups=infeasible_seq_groups,
+        )
+
+        return prefill_ret, swapped_in_ret
 
     def _schedule_default(self) -> SchedulerOutputs:
         """Schedule queued requests.
@@ -1649,16 +1667,21 @@ class Scheduler:
             partial_prefill_metadata=partial_prefill_metadata,
         )
 
-        # Schedule swapped out requests.
-        # If preemption happens, it means we don't have space for swap-in.
-        if (
-            len(running_scheduled.preempted)
-            + len(running_scheduled.swapped_out)
-            == 0
-        ):
-            swapped_in = self._schedule_swapped(budget, curr_loras)
+        # [Will]: since we are setting OOM preemption as RECOMPUTE
+        # there should never be any swapped_in seq. Preempted seqs
+        # should either be reinserted into the head of the waiting
+        # queue (OOM) or to the end (quantum).
+        #
+        # # Schedule swapped out requests.
+        # # If preemption happens, it means we don't have space for swap-in.
+        # should_oom_swap_in = (
+        #     len(running_scheduled.preempted)
+        #     + len(running_scheduled.swapped_out)
+        # ) == 0
+        # if should_oom_swap_in:
+        #     swapped_in = self._schedule_swapped(budget, curr_loras)
 
-        prefills = self._schedule_waiting(
+        prefills, swapped_in = self._schedule_waiting(
             budget,
             curr_loras,
             enable_chunking=True,
