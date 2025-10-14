@@ -593,6 +593,7 @@ class Scheduler:
         max_num_seqs_budget = self.scheduler_config.max_num_seqs
 
         for seq_group in self.running:
+            #print(f"[CFS] status[{seq_group.first_seq.status} from {seq_group.request_id}]")
             if seq_group.is_finished():
                 print(f"[CFS] seq {seq_group.request_id} finished")
                 # Seq group finished
@@ -614,9 +615,23 @@ class Scheduler:
         new_sched_seqs = []
         should_sched_waiting = self._passed_delay(time.time())
 
+        #if should_sched_waiting:
+        #    print("[CFS] New step =============================================")
+
         while should_sched_waiting and self.waiting and max_num_seqs_budget > 0:
             # Get waiting with highest priority
             new_seq = self.waiting.popleft()
+
+            # Waiting seqs can be cancelled async. Need to check if finished
+            if new_seq.is_finished():
+                print(f"[CFS] seq {new_seq.request_id} finished")
+                if self.use_async_output_proc:
+                    assert self.output_proc_callback is not None
+                    self.output_proc_callback(request_id=new_seq.request_id)
+                self._free_finished_seq_group(new_seq)
+                self.waiting.remove(new_seq)
+                continue
+
             print(f"[CFS][fillup] budget[{max_num_seqs_budget}] adding seq {new_seq.request_id} with vtime {new_seq.total_vtime}")
             new_sched_seqs.append(new_seq)
             max_num_seqs_budget -= 1
@@ -639,12 +654,23 @@ class Scheduler:
             and max_num_seqs_budget == 0
             and self.waiting
         ):
-            while self.running:
+            while self.running and self.waiting:
                 # Get seq with lowest priority
                 seq_group = self.running[0]
 
                 # Get waiting with highest priority
                 waiting_seq_head = self.waiting[0]
+
+                 # Waiting seqs can be cancelled async. Need to check if finished
+                if waiting_seq_head.is_finished():
+                    print(f"[CFS] seq {waiting_seq_head.request_id} finished")
+                    if self.use_async_output_proc:
+                        assert self.output_proc_callback is not None
+                        self.output_proc_callback(request_id=waiting_seq_head.request_id)
+                    self._free_finished_seq_group(waiting_seq_head)
+                    self.waiting.remove(waiting_seq_head)
+                    continue
+
                 if _should_preempt(seq_group, waiting_seq_head):
                     print(f"[CFS][preempt] preempting {seq_group.request_id}[{seq_group.cur_vtime}/{seq_group.total_vtime}]")
                     print(f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{waiting_seq_head.cur_vtime}/{waiting_seq_head.total_vtime}]")
@@ -1011,6 +1037,8 @@ class Scheduler:
         # Move to next cache (if exists)
         self.cache_id = self.next_cache_id
 
+        #print("^^^^^^^^^^^^^^^^^^^^^^^^done schedule")
+
         # Return results
         return (
             seq_group_metadata_list,
@@ -1023,6 +1051,7 @@ class Scheduler:
 
     def free_seq(self, seq: Sequence) -> None:
         """Free a sequence from a block table."""
+        #print(f"freeeeeeeeeeeeeeeeeee {seq}")
         self.block_manager.free(seq)
 
     def remove_seq_from_computed_blocks_tracker(
