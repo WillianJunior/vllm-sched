@@ -586,10 +586,10 @@ class Scheduler:
             scheduler_config=self.scheduler_config,
         )
 
-        if not self._passed_delay(time.time()):
-            # ??? do not over schedule
-            # this should be something like batched scheduling
-            break
+        # if not self._passed_delay(time.time()):
+        #     # ??? do not over schedule
+        #     # this should be something like batched scheduling
+        #     break
 
         # running = self.running.copy()
         # waiting = self.waiting.copy()
@@ -618,8 +618,9 @@ class Scheduler:
         # === Add more seqs to running until max_num_seqs batch is filled.
 
         new_sched_seqs = []
+        should_sched_waiting = self._passed_delay(time.time())
 
-        while self.waiting and max_num_seqs_budget > 0:
+        while should_sched_waiting and self.waiting and max_num_seqs_budget > 0:
             # Get waiting with highest priority
             new_seq = self.waiting.popleft()
             new_sched_seqs.append(new_seq)
@@ -637,7 +638,8 @@ class Scheduler:
             return can_preempt_victim and should_preempt
 
         if (
-            len(self.running) + len(new_sched_seqs) == self.max_num_seqs
+            should_sched_waiting
+            and len(self.running) + len(new_sched_seqs) == self.max_num_seqs
             and self.waiting
         ):
             while self.running:
