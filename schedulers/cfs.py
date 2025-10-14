@@ -310,10 +310,14 @@ class Scheduler:
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
+        # self.waiting: List[SequenceGroup] = []
         self.waiting: Deque[SequenceGroup] = deque()
+
         # Sequence groups in the RUNNING state.
         # Contain decode requests.
+        # self.running: List[SequenceGroup] = []
         self.running: Deque[SequenceGroup] = deque()
+
         # Sequence groups in the SWAPPED state.
         # Contain decode requests that are swapped out.
         self.swapped: Deque[SequenceGroup] = deque()
@@ -606,7 +610,7 @@ class Scheduler:
                     assert self.output_proc_callback is not None
                     self.output_proc_callback(request_id=seq_group.request_id)
                 self._free_finished_seq_group(seq_group)
-                self.running.pop(seq_group)
+                self.running.remove(seq_group)
             else:
                 # Need to update vtimes
                 next_vtime = self.base_sched_step_vtime * seq_group.priority
@@ -639,7 +643,7 @@ class Scheduler:
 
         if (
             should_sched_waiting
-            and len(self.running) + len(new_sched_seqs) == self.max_num_seqs
+            and max_num_seqs_budget == 0
             and self.waiting
         ):
             while self.running:
@@ -663,7 +667,8 @@ class Scheduler:
         # === Preempt and swap seqs when OOM
 
         self.running.extend(new_sched_seqs)
-        self.running.sort()  # sorted by priority: total_vtime
+        #self.running.sort(key=lambda s: s.total_vtime, reverse=True)  # sorted by priority: total_vtime
+        self.running = deque(sorted(self.running, key=lambda s: s.total_vtime, reverse=True))
 
         # Number of free blocks in the GPU, i.e., the memory budget
         block_allocator = self.block_manager.block_allocator
@@ -693,7 +698,7 @@ class Scheduler:
                     seq_tokens + new_tokens, seq.block_size
                 )
 
-            return get_num_new_blocks
+            return num_required_blocks
 
         # Calculate current budget
         for seq_group in self.running:
@@ -709,8 +714,8 @@ class Scheduler:
 
         # Remove seqs from running if there is no budget
         for seq_group in self.running:
-            # If should preempt some seq
-            if budget.remaining_token_budget() >= 0:
+            # Check if preemption due to OOM is still reguired
+            if cur_blocks_budget >= 0:
                 break
 
             # Check if it is possible to preempt seq_group and
@@ -728,12 +733,12 @@ class Scheduler:
                 self.waiting.append(seq_group)
 
             # Remove seq and update budget
-            self.running.pop(seq_group)
+            self.running.remove(seq_group)
             cur_blocks_budget += get_num_required_blocks(seq_group)
 
         # If there still is a budget deficit, remove seqs regardless
         # of the thrashing avoidance policy
-        while budget.remaining_token_budget() < 0:
+        while cur_blocks_budget < 0:
             if seq_group.cur_vtime > 0:
                 # seq_group was running
                 preempted_seqs.append(seq_group)
@@ -742,7 +747,7 @@ class Scheduler:
                 # Return it to the waiting queue
                 self.waiting.append(seq_group)
             # Remove seq and update budget
-            self.running.pop(seq_group)
+            self.running.remove(seq_group)
             cur_blocks_budget += get_num_required_blocks(seq_group)
 
         # === 5. Finish =======================================================
@@ -771,7 +776,8 @@ class Scheduler:
             self._swap_out(seq_group, blocks_to_swap_out)
 
         self.waiting.extend(preempted_seqs)
-        self.waiting.sort()  # higher priority first
+        #self.waiting.sort(key=lambda s: s.total_vtime)  # higher priority first
+        self.waiting = deque(sorted(self.waiting, key=lambda s: s.total_vtime))
 
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:
