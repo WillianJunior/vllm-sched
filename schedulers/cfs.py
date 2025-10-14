@@ -402,7 +402,7 @@ class Scheduler:
         setattr(SequenceGroup, "cur_vtime", 0)
 
         # [Will]: Initially all seqs have default priority.
-        setattr(SequenceGroup, "priority", 1)
+        setattr(SequenceGroup, "sched_priority", 1)
 
         # [Will]: Acknowledge whether it was swapped due to quantum ending.
         # Required for checking if a sequence is a prefill or if it should
@@ -577,23 +577,12 @@ class Scheduler:
 
         # print("xxxxxxxxxxxxxxxxxxxxxxx sched start xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 
-        # budget = SchedulingBudget(
-        #     token_budget=self.scheduler_config.max_num_batched_tokens,
-        #     max_num_seqs=self.scheduler_config.max_num_seqs,
-        # )
-        curr_loras: Set[int] = set()
-
         # Create partial prefill metadata
         partial_prefill_metadata = PartialPrefillMetadata.from_queues(
             running=self.running,
             waiting=self.waiting,
             scheduler_config=self.scheduler_config,
         )
-
-        # if not self._passed_delay(time.time()):
-        #     # ??? do not over schedule
-        #     # this should be something like batched scheduling
-        #     break
 
         # running = self.running.copy()
         # waiting = self.waiting.copy()
@@ -605,6 +594,7 @@ class Scheduler:
 
         for seq_group in self.running:
             if seq_group.is_finished():
+                print(f"[CFS] seq {seq_group.request_id} finished")
                 # Seq group finished
                 if self.use_async_output_proc:
                     assert self.output_proc_callback is not None
@@ -613,7 +603,7 @@ class Scheduler:
                 self.running.remove(seq_group)
             else:
                 # Need to update vtimes
-                next_vtime = self.base_sched_step_vtime * seq_group.priority
+                next_vtime = self.base_sched_step_vtime * seq_group.sched_priority
                 seq_group.cur_vtime += next_vtime
                 seq_group.total_vtime += next_vtime
                 max_num_seqs_budget -= 1
@@ -627,6 +617,7 @@ class Scheduler:
         while should_sched_waiting and self.waiting and max_num_seqs_budget > 0:
             # Get waiting with highest priority
             new_seq = self.waiting.popleft()
+            print(f"[CFS][fillup] budget[{max_num_seqs_budget}] adding seq {new_seq.request_id} with vtime {new_seq.total_vtime}")
             new_sched_seqs.append(new_seq)
             max_num_seqs_budget -= 1
 
@@ -638,7 +629,9 @@ class Scheduler:
         def _should_preempt(victim, sub):
             # preemption condition
             can_preempt_victim = victim.cur_vtime >= self.min_vtime_run
-            should_preempt = victim.total_vtime < sub.total_vtime
+            should_preempt = victim.total_vtime > sub.total_vtime
+            #print(f"[_should_preempt] victim[{victim.cur_vtime}/{victim.total_vtime}] sub[{sub.cur_vtime}/{sub.total_vtime}]")
+            
             return can_preempt_victim and should_preempt
 
         if (
@@ -653,6 +646,8 @@ class Scheduler:
                 # Get waiting with highest priority
                 waiting_seq_head = self.waiting[0]
                 if _should_preempt(seq_group, waiting_seq_head):
+                    print(f"[CFS][preempt] preempting {seq_group.request_id}[{seq_group.cur_vtime}/{seq_group.total_vtime}]")
+                    print(f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{waiting_seq_head.cur_vtime}/{waiting_seq_head.total_vtime}]")
                     self.running.popleft()  # remove lowest priority
                     self.waiting.popleft()  # remove highest priority
                     preempted_seqs.append(seq_group)
@@ -732,6 +727,8 @@ class Scheduler:
                 # Return it to the waiting queue
                 self.waiting.append(seq_group)
 
+            print(f"[CFS][OOM] block_budget[{cur_blocks_budget}] preempting {seq_group.request_id}")
+
             # Remove seq and update budget
             self.running.remove(seq_group)
             cur_blocks_budget += get_num_required_blocks(seq_group)
@@ -739,6 +736,7 @@ class Scheduler:
         # If there still is a budget deficit, remove seqs regardless
         # of the thrashing avoidance policy
         while cur_blocks_budget < 0:
+            print(f"[CFS][OOM][hard] block_budget[{cur_blocks_budget}] preempting {seq_group.request_id}")
             if seq_group.cur_vtime > 0:
                 # seq_group was running
                 preempted_seqs.append(seq_group)
