@@ -648,10 +648,10 @@ class Scheduler:
         ):
             while self.running:
                 # Get seq with lowest priority
-                seq_group = self.running.peek()
+                seq_group = self.running[0]
 
                 # Get waiting with highest priority
-                waiting_seq_head = self.waiting.peek()
+                waiting_seq_head = self.waiting[0]
                 if _should_preempt(seq_group, waiting_seq_head):
                     self.running.popleft()  # remove lowest priority
                     self.waiting.popleft()  # remove highest priority
