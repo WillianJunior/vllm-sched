@@ -67,29 +67,29 @@ class CFS(Scheduler):
         # [Will]: How many tokens should be be considered per sched step
         self.base_sched_step_vtime = 1
 
-    def _update_finished_priority(seq_group):
+    def _update_finished_priority(self, seq_group):
         pass
 
-    def _update_running_priority(seq_group):
+    def _update_running_priority(self, seq_group):
         # CFS implementation
         # Need to update vtimes
         next_vtime = self.base_sched_step_vtime * seq_group.sched_priority
         seq_group.cur_vtime += next_vtime
         seq_group.total_vtime += next_vtime
 
-    def _update_waiting_priority(seq_group):
+    def _update_waiting_priority(self, seq_group):
         pass
 
-    def _priosched_should_update_waiting_1():
+    def _priosched_should_update_waiting_1(self):
         return False
 
-    def _can_preempt(seq_group):
+    def _can_preempt(self, seq_group):
         # preemption condition
         return seq_group.cur_vtime >= self.min_vtime_run
 
-    def _should_preempt(victim, sub):
+    def _should_preempt(self, victim, sub):
         should_preempt = victim.total_vtime > sub.total_vtime
-        return _can_preempt(victim) and should_preempt
+        return self._can_preempt(victim) and should_preempt
 
-    def _added_sequence_to_running(seq_group):
+    def _added_sequence_to_running(self, seq_group):
         seq_group.cur_vtime = 0
