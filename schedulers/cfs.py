@@ -17,23 +17,39 @@
 # from vllm.lora.request import LoRARequest
 # from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (
-#     Sequence,
-#     SequenceData,
+    #     Sequence,
+    #     SequenceData,
     SequenceGroup,
-#     SequenceGroupBase,
-#     SequenceGroupMetadata,
-#     SequenceGroupMetadataDelta,
-#     SequenceStage,
-#     SequenceStatus,
+    #     SequenceGroupBase,
+    #     SequenceGroupMetadata,
+    #     SequenceGroupMetadataDelta,
+    #     SequenceStage,
+    #     SequenceStatus,
 )
+
 # from vllm.utils import Device, PyObjectCache
 
 from prioritySchedBase import Scheduler
 
+
 class CFS(Scheduler):
     """docstring for CFS"""
-    def __init__(self, arg):
-        super(CFS, self).__init__()
+
+    def __init__(
+        self,
+        scheduler_config: SchedulerConfig,
+        cache_config: CacheConfig,
+        lora_config: Optional[LoRAConfig],
+        pipeline_parallel_size: int = 1,
+        output_proc_callback: Optional[Callable] = None,
+    ) -> None:
+        super(CFS, self).__init__(
+            scheduler_config,
+            cache_config,
+            lora_config,
+            pipeline_parallel_size,
+            output_proc_callback,
+        )
 
         # === CFS stuff... ====================================================
         # [Will]: Monkey patching SequenceGroup to have virtual runtimes.
@@ -74,4 +90,3 @@ class CFS(Scheduler):
 
     def _added_sequence_to_running(seq_group):
         seq_group.cur_vtime = 0
-
