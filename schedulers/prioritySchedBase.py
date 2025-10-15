@@ -390,7 +390,6 @@ class Scheduler(ABC):
                 scheduler_config.max_num_batched_tokens // i
             )
 
-
         # [Will]: we are only doing recompute on OOM
         # preemption mode, RECOMPUTE or SWAP
         # self.user_specified_preemption_mode = scheduler_config.preemption_mode
@@ -568,6 +567,11 @@ class Scheduler(ABC):
     def _added_sequence_to_running(self, seq_group):
         raise NotImplementedError("_added_sequence_to_running")
 
+    @property
+    @abstractmethod
+    def priority(self, seq_group):
+        raise NotImplementedError("priority")
+
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
         """Schedule queued requests.
 
@@ -698,7 +702,7 @@ class Scheduler(ABC):
 
         self.running.extend(new_sched_seqs)
         self.running = deque(
-            sorted(self.running, key=lambda s: s.total_vtime, reverse=True)
+            sorted(self.running, key=lambda s: s.priority, reverse=True)
         )
 
         # Number of free blocks in the GPU, i.e., the memory budget
@@ -820,7 +824,7 @@ class Scheduler(ABC):
             self._swap_out(seq_group, blocks_to_swap_out)
 
         self.waiting.extend(preempted_seqs)
-        self.waiting = deque(sorted(self.waiting, key=lambda s: s.total_vtime))
+        self.waiting = deque(sorted(self.waiting, key=lambda s: s.priority))
 
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:

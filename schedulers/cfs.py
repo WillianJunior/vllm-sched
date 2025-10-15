@@ -76,3 +76,6 @@ class CFS(Scheduler):
 
     def _added_sequence_to_running(self, seq_group):
         seq_group.cur_vtime = 0
+
+    def priority(self, seq_group):
+        return seq_group.total_vtime

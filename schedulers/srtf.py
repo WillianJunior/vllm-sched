@@ -96,3 +96,6 @@ class SRTF(Scheduler):
             self.oracle[get_key(seq_group)][OracleFields.GENERATE.value]
             - seq_group.total_time
         )
+
+    def priority(self, seq_group):
+        return seq_group.remaining_time
