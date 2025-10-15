@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import enum
+
 # import os
 # import random
 # import time
@@ -19,6 +20,7 @@ class OracleFields(enum.Enum):
     KEY = enum.auto()
     PROMPT = enum.auto()
     GENERATE = enum.auto()
+
 
 class SRTF(Scheduler):
     """docstring for SRTF"""
@@ -44,9 +46,9 @@ class SRTF(Scheduler):
             for line in file:
                 parts = line.strip().split()
                 assert len(parts) == 3, "malformed lines"
-                key = int(parts[OracleFields.KEY])
-                value1 = int(parts[OracleFields.PROMPT])
-                value2 = int(parts[OracleFields.GENERATE])
+                key = int(parts[OracleFields.KEY.value])
+                value1 = int(parts[OracleFields.PROMPT.value])
+                value2 = int(parts[OracleFields.GENERATE.value])
                 data_dict[key] = (key, value1, value2)
 
         # [Will]: Monkey patching SequenceGroup to have virtual runtimes.
@@ -64,7 +66,7 @@ class SRTF(Scheduler):
 
     def _get_key(seq_group):
         print(seq_group.first_seq.inputs)
-        0/0
+        0 / 0
         return seq_group.first_seq.inputs
 
     def _update_finished_priority(self, seq_group):
@@ -90,4 +92,7 @@ class SRTF(Scheduler):
 
     def _added_sequence_to_running(self, seq_group):
         seq_group.cur_time = 0
-        seq_group.remaining_time = self.oracle[get_key(seq_group)][GENERATE] - seq_group.total_time
+        seq_group.remaining_time = (
+            self.oracle[get_key(seq_group)][OracleFields.GENERATE.value]
+            - seq_group.total_time
+        )
