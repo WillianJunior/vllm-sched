@@ -21,6 +21,7 @@ class OracleFields(enum.Enum):
     PROMPT = 1
     GENERATE = 2
 
+KEY_TOKEN_IDX = 3
 
 class SRTF(Scheduler):
     """docstring for SRTF"""
@@ -64,10 +65,8 @@ class SRTF(Scheduler):
         # [Will]: How many tokens should be be considered per sched step
         self.base_sched_step_time = 1
 
-    def _get_key(seq_group):
-        print(seq_group.first_seq.inputs)
-        0 / 0
-        return seq_group.first_seq.inputs
+    def _get_key(self, seq_group):
+        return seq_group.first_seq.inputs['prompt_token_ids'][KEY_TOKEN_IDX]
 
     def _update_finished_priority(self, seq_group):
         pass
@@ -93,7 +92,7 @@ class SRTF(Scheduler):
     def _added_sequence_to_running(self, seq_group):
         seq_group.cur_time = 0
         seq_group.remaining_time = (
-            self.oracle[get_key(seq_group)][OracleFields.GENERATE.value]
+            self.oracle[self._get_key(seq_group)][OracleFields.GENERATE.value]
             - seq_group.total_time
         )
 

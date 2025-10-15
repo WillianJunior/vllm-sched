@@ -702,7 +702,7 @@ class Scheduler(ABC):
 
         self.running.extend(new_sched_seqs)
         self.running = deque(
-            sorted(self.running, key=lambda s: s.priority, reverse=True)
+            sorted(self.running, key=lambda s: self.priority(s), reverse=True)
         )
 
         # Number of free blocks in the GPU, i.e., the memory budget
@@ -824,7 +824,7 @@ class Scheduler(ABC):
             self._swap_out(seq_group, blocks_to_swap_out)
 
         self.waiting.extend(preempted_seqs)
-        self.waiting = deque(sorted(self.waiting, key=lambda s: s.priority))
+        self.waiting = deque(sorted(self.waiting, key=lambda s: self.priority(s)))
 
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:
