@@ -575,6 +575,9 @@ class Scheduler:
                 scheduler_config.max_num_batched_tokens // i
             )
 
+        self.seq2id_map = dict()
+        self.global_seq_id = 0
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -590,6 +593,8 @@ class Scheduler:
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
+        self.seq2id_map[seq_group.request_id] = self.global_seq_id
+        self.global_seq_id += 1
         self.waiting.append(seq_group)
 
     def _add_seq_group_to_running(self, seq_group: SequenceGroup) -> None:
@@ -1867,8 +1872,13 @@ class Scheduler:
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)
 
-    def free_seq(self, seq: Sequence) -> None:
+    def free_seq(self, seq: Sequence, req_id = None) -> None:
         """Free a sequence from a block table."""
+        seq_group_id = "?"
+        if req_id:
+            seq_group_id = self.seq2id_map[req_id]
+
+        print(f"Finished {seq_group_id} prompt {seq.get_prompt_len()} output {seq.get_output_len()} total {seq.get_len()}")
         self.block_manager.free(seq)
 
     def remove_seq_from_computed_blocks_tracker(
@@ -1889,7 +1899,7 @@ class Scheduler:
         """Free finished seqs in a sequence group."""
         for seq in seq_group.get_seqs():
             if seq.is_finished():
-                self.free_seq(seq)
+                self.free_seq(seq, seq_group.request_id)
 
     def _free_finished_seq_group(self, seq_group: SequenceGroup) -> None:
         if seq_group.is_finished():
