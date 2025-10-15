@@ -17,9 +17,9 @@ from prioritySchedBase import Scheduler
 
 
 class OracleFields(enum.Enum):
-    KEY = enum.auto()
-    PROMPT = enum.auto()
-    GENERATE = enum.auto()
+    KEY = 0
+    PROMPT = 1
+    GENERATE = 2
 
 
 class SRTF(Scheduler):
@@ -49,7 +49,7 @@ class SRTF(Scheduler):
                 key = int(parts[OracleFields.KEY.value])
                 value1 = int(parts[OracleFields.PROMPT.value])
                 value2 = int(parts[OracleFields.GENERATE.value])
-                data_dict[key] = (key, value1, value2)
+                self.oracle[key] = (key, value1, value2)
 
         # [Will]: Monkey patching SequenceGroup to have virtual runtimes.
         # Total is across all schedulings and cur is for the current execution.
