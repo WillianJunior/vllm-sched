@@ -60,7 +60,7 @@ class SRTF(Scheduler):
 
         # [Will]: Minimum time a sequence must execute. It cannot be preempted
         # if seq.cur_vtime < min_vtime_run. Unless, OOM.
-        self.min_time_run = 80
+        self.min_time_run = 10
 
         # [Will]: How many tokens should be be considered per sched step
         self.base_sched_step_time = 1
