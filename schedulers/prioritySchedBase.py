@@ -541,27 +541,31 @@ class Scheduler(ABC):
             return prompt_limit
 
     @abstractmethod
-    def _update_finished_priority(seq_group):
+    def _update_finished_priority(self, seq_group):
         raise NotImplementedError("_update_finished_priority")
 
     @abstractmethod
-    def _update_running_priority(seq_group):
+    def _update_running_priority(self, seq_group):
         raise NotImplementedError("_update_running_priority")
 
     @abstractmethod
-    def _update_waiting_priority(seq_group):
+    def _update_waiting_priority(self, seq_group):
         raise NotImplementedError("_update_waiting_priority")
 
     @abstractmethod
-    def _can_preempt(seq_group):
+    def _priosched_should_update_waiting_1(self):
+        raise NotImplementedError("_priosched_should_update_waiting_1")
+
+    @abstractmethod
+    def _can_preempt(self, seq_group):
         raise NotImplementedError("_can_preempt")
 
     @abstractmethod
-    def _should_preempt(victim, sub):
+    def _should_preempt(self, victim, sub):
         raise NotImplementedError("_should_preempt")
 
     @abstractmethod
-    def _added_sequence_to_running(seq_group):
+    def _added_sequence_to_running(self, seq_group):
         raise NotImplementedError("_added_sequence_to_running")
 
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
@@ -606,14 +610,14 @@ class Scheduler(ABC):
                 self._free_finished_seq_group(seq_group)
                 self.running.remove(seq_group)
 
-                _update_finished_priority(seq_group)
+                self._update_finished_priority(seq_group)
             else:
                 max_num_seqs_budget -= 1
-                _update_running_priority(seq_group)
+                self._update_running_priority(seq_group)
 
         if self._priosched_should_update_waiting_1():
             for seq_group in self.waiting:
-                _update_waiting_priority(seq_group)
+                self._update_waiting_priority(seq_group)
 
         # === 2. Fill-up running ==============================================
         # === Add more seqs to running until max_num_seqs batch is filled.
@@ -671,7 +675,7 @@ class Scheduler(ABC):
                     self.waiting.remove(waiting_seq_head)
                     continue
 
-                if _should_preempt(seq_group, waiting_seq_head):
+                if self._should_preempt(seq_group, waiting_seq_head):
                     if cfs_logger:
                         print(
                             f"[CFS][preempt] preempting {seq_group.request_id}[{seq_group.cur_vtime}/{seq_group.total_vtime}]"
@@ -752,7 +756,7 @@ class Scheduler(ABC):
                 seq_group.first_seq.status == SequenceStatus.RUNNING
             ):  # testing vs above
                 # seq_group was running
-                if _can_preempt(seq_group):
+                if self._can_preempt(seq_group):
                     # This seq cannot be preempted:
                     # Thrashing avoidance policy
                     continue
@@ -820,7 +824,7 @@ class Scheduler(ABC):
 
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:
-            _added_sequence_to_running(seq_group)
+            self._added_sequence_to_running(seq_group)
             if seq_group.is_prefill():
                 # Prefill need to allocate block space
                 self.block_manager.allocate(seq_group)
