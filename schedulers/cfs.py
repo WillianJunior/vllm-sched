@@ -11,7 +11,7 @@
 # from typing import Sequence as GenericSequence
 # from typing import Set, Tuple, Union
 
-# from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
+from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 # from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 # from vllm.logger import init_logger
 # from vllm.lora.request import LoRARequest
