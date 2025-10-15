@@ -20,8 +20,8 @@ class OracleFields(enum.Enum):
     PROMPT = enum.auto()
     GENERATE = enum.auto()
 
-class CFS(Scheduler):
-    """docstring for CFS"""
+class SRTF(Scheduler):
+    """docstring for SRTF"""
 
     def __init__(
         self,
@@ -31,7 +31,7 @@ class CFS(Scheduler):
         pipeline_parallel_size: int = 1,
         output_proc_callback: Optional[Callable] = None,
     ) -> None:
-        super(CFS, self).__init__(
+        super(SRTF, self).__init__(
             scheduler_config,
             cache_config,
             lora_config,
