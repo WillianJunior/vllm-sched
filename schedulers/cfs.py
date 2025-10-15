@@ -80,6 +80,10 @@ class CFS(Scheduler):
     def _update_waiting_priority(seq_group):
         pass
 
+    @abstractmethod
+    def _priosched_should_update_waiting_1():
+        return False
+
     def _can_preempt(seq_group):
         # preemption condition
         return seq_group.cur_vtime >= self.min_vtime_run
