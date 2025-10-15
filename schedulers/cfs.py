@@ -80,7 +80,6 @@ class CFS(Scheduler):
     def _update_waiting_priority(seq_group):
         pass
 
-    @abstractmethod
     def _priosched_should_update_waiting_1():
         return False
 
