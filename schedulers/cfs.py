@@ -50,6 +50,10 @@ class CFS(Scheduler):
         # [Will]: How many tokens should be be considered per sched step
         self.base_sched_step_vtime = 1
 
+    def _update_queue_size(self, n):
+        # required for EEVDF
+        pass
+
     def _update_finished_priority(self, seq_group):
         pass
 

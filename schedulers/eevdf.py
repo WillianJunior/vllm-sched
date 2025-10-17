@@ -7,7 +7,7 @@
 # import time
 # from collections import deque
 # from dataclasses import dataclass, field
-from typing import Callable, Deque, Dict, Iterable, List, Optional
+from typing import Callable, Optional
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.sequence import SequenceGroup
@@ -93,4 +93,4 @@ class EEVDF(Scheduler):
             seq_group.expected_time_slice *= 2
 
     def priority(self, seq_group):
-        return seq_group.vdeadline
+        return -seq_group.vdeadline

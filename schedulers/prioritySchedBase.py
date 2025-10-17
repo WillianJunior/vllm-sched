@@ -3,17 +3,16 @@
 
 import enum
 import os
-import random
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Deque, Dict, Iterable, List, Optional
 from typing import Sequence as GenericSequence
 from typing import Set, Tuple, Union
 from abc import ABC, abstractmethod
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
-from vllm.core.interfaces import AllocStatus, BlockSpaceManager
+from vllm.core.interfaces import BlockSpaceManager
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.prompt_adapter.request import PromptAdapterRequest
@@ -601,7 +600,7 @@ class Scheduler(ABC):
             scheduler_config=self.scheduler_config,
         )
 
-        cfs_logger = False
+        cfs_logger = True
 
         # === 1. Update priorities ============================================
         # === Update vtimes and finish seqs
@@ -688,10 +687,10 @@ class Scheduler(ABC):
                 if self._should_preempt(seq_group, waiting_seq_head):
                     if cfs_logger:
                         print(
-                            f"[CFS][preempt] preempting {seq_group.request_id}[{seq_group.cur_vtime}/{seq_group.total_vtime}]"
+                            f"[CFS][preempt] preempting {seq_group.request_id}[{self.priority(seq_group)}]"
                         )
                         print(
-                            f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{waiting_seq_head.cur_vtime}/{waiting_seq_head.total_vtime}]"
+                            f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{self.priority(seq_group)}]"
                         )
                     self.running.popleft()  # remove lowest priority
                     self.waiting.popleft()  # remove highest priority

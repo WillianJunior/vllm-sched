@@ -8,7 +8,7 @@ import enum
 # import time
 # from collections import deque
 # from dataclasses import dataclass, field
-from typing import Callable, Deque, Dict, Iterable, List, Optional
+from typing import Callable, Optional
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.sequence import SequenceGroup
@@ -67,6 +67,10 @@ class SRTF(Scheduler):
 
     def _get_key(self, seq_group):
         return seq_group.first_seq.inputs['prompt_token_ids'][KEY_TOKEN_IDX]
+    
+    def _update_queue_size(self, n):
+        # required for EEVDF
+        pass
 
     def _update_finished_priority(self, seq_group):
         pass
