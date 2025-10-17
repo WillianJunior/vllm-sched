@@ -571,10 +571,13 @@ class Scheduler(ABC):
     def _added_sequence_to_running(self, seq_group):
         raise NotImplementedError("_added_sequence_to_running")
 
-    @property
     @abstractmethod
     def priority(self, seq_group):
         raise NotImplementedError("priority")
+
+    @abstractmethod
+    def print_seq(self, seq_group):
+        raise NotImplementedError("print_seq")
 
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
         """Schedule queued requests.
@@ -649,12 +652,13 @@ class Scheduler(ABC):
                 self.waiting.remove(new_seq)
                 continue
 
-            if cfs_logger:
-                print(
-                    f"[CFS][fillup] budget[{max_num_seqs_budget}] adding seq {new_seq.request_id} with vtime {new_seq.total_vtime}"
-                )
             new_sched_seqs.append(new_seq)
             max_num_seqs_budget -= 1
+            if cfs_logger:
+                print(
+                    f"[CFS][fillup] budget[{max_num_seqs_budget}] adding "
+                    f"seq {new_seq.request_id} with {new_seq.print_seq()}"
+                )
 
         # === 3. Preemption check =============================================
         # === Preempt and swap seqs, when necessary
@@ -687,10 +691,10 @@ class Scheduler(ABC):
                 if self._should_preempt(seq_group, waiting_seq_head):
                     if cfs_logger:
                         print(
-                            f"[CFS][preempt] preempting {seq_group.request_id}[{self.priority(seq_group)}]"
+                            f"[CFS][preempt] preempting {seq_group.request_id}[{seq_group.print_seq()}]"
                         )
                         print(
-                            f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{self.priority(seq_group)}]"
+                            f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{waiting_seq_head.print_seq()}]"
                         )
                     self.running.popleft()  # remove lowest priority
                     self.waiting.popleft()  # remove highest priority

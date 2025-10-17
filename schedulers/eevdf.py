@@ -36,8 +36,8 @@ class EEVDF(Scheduler):
 
         # === EEVDF stuff... ==================================================
         # [Will]: Monkey patching SequenceGroup to have virtual runtimes.
-        # expected_time_slice represents how much time is required to process 
-        # the sequence. This value can change with the progress of the 
+        # expected_time_slice represents how much time is required to process
+        # the sequence. This value can change with the progress of the
         # execution.
         setattr(SequenceGroup, "total_vtime", 0)
         setattr(SequenceGroup, "expected_time_slice", 10)
@@ -94,3 +94,9 @@ class EEVDF(Scheduler):
 
     def priority(self, seq_group):
         return -seq_group.vdeadline
+
+    def print_seq(self, seq_group):
+        return (
+            f"lag={seq_group.lag} - vdeadline={seq_group.vdeadline} "
+            f"- {seq_group.total_vtime}/{seq_group.expected_time_slice}"
+        )

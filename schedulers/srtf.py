@@ -102,3 +102,7 @@ class SRTF(Scheduler):
 
     def priority(self, seq_group):
         return seq_group.remaining_time
+
+    def print_seq(self, seq_group):
+        return f"Rem={seq_group.remaining_time} - {seq_group.cur_time}/{seq_group.total_time}"
+
