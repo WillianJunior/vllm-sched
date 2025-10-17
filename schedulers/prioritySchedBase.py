@@ -541,7 +541,8 @@ class Scheduler(ABC):
 
     @abstractmethod
     def _update_queue_size(self, n):
-        raise NotImplementedError("_update_queue_size")
+        # required for EEVDF
+        pass
 
     @abstractmethod
     def _update_finished_priority(self, seq_group):
@@ -606,6 +607,7 @@ class Scheduler(ABC):
         # === Update vtimes and finish seqs
 
         max_num_seqs_budget = self.scheduler_config.max_num_seqs
+        self._update_queue_size(len(self.waiting) + len(self.running))
 
         for seq_group in self.running:
             if seq_group.is_finished():
@@ -828,7 +830,9 @@ class Scheduler(ABC):
             self._swap_out(seq_group, blocks_to_swap_out)
 
         self.waiting.extend(preempted_seqs)
-        self.waiting = deque(sorted(self.waiting, key=lambda s: self.priority(s)))
+        self.waiting = deque(
+            sorted(self.waiting, key=lambda s: self.priority(s))
+        )
 
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:
