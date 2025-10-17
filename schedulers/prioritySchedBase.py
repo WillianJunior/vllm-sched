@@ -540,6 +540,10 @@ class Scheduler(ABC):
             return prompt_limit
 
     @abstractmethod
+    def _update_queue_size(self, n):
+        raise NotImplementedError("_update_queue_size")
+
+    @abstractmethod
     def _update_finished_priority(self, seq_group):
         raise NotImplementedError("_update_finished_priority")
 
