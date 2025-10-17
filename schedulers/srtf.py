@@ -21,7 +21,9 @@ class OracleFields(enum.Enum):
     PROMPT = 1
     GENERATE = 2
 
+
 KEY_TOKEN_IDX = 3
+
 
 class SRTF(Scheduler):
     """docstring for SRTF"""
@@ -66,8 +68,8 @@ class SRTF(Scheduler):
         self.base_sched_step_time = 1
 
     def _get_key(self, seq_group):
-        return seq_group.first_seq.inputs['prompt_token_ids'][KEY_TOKEN_IDX]
-    
+        return seq_group.first_seq.inputs["prompt_token_ids"][KEY_TOKEN_IDX]
+
     def _update_queue_size(self, n):
         # required for EEVDF
         pass
@@ -79,11 +81,19 @@ class SRTF(Scheduler):
         seq_group.cur_time += self.base_sched_step_time
         seq_group.total_time += self.base_sched_step_time
 
+        seq_group.remaining_time = (
+            self.oracle[self._get_key(seq_group)][OracleFields.GENERATE.value]
+            - seq_group.total_time
+        )
+
     def _update_waiting_priority(self, seq_group):
-        pass
+        seq_group.remaining_time = (
+            self.oracle[self._get_key(seq_group)][OracleFields.GENERATE.value]
+            - seq_group.total_time
+        )
 
     def _priosched_should_update_waiting_1(self):
-        return False
+        return True
 
     def _can_preempt(self, seq_group):
         # preemption condition
@@ -95,14 +105,9 @@ class SRTF(Scheduler):
 
     def _added_sequence_to_running(self, seq_group):
         seq_group.cur_time = 0
-        seq_group.remaining_time = (
-            self.oracle[self._get_key(seq_group)][OracleFields.GENERATE.value]
-            - seq_group.total_time
-        )
 
     def priority(self, seq_group):
         return seq_group.remaining_time
 
     def print_seq(self, seq_group):
         return f"Rem={seq_group.remaining_time} - {seq_group.cur_time}/{seq_group.total_time}"
-

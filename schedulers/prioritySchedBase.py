@@ -604,6 +604,7 @@ class Scheduler(ABC):
         )
 
         cfs_logger = True
+        should_sched_waiting = self._passed_delay(time.time())
 
         # === 1. Update priorities ============================================
         # === Update vtimes and finish seqs
@@ -613,8 +614,8 @@ class Scheduler(ABC):
 
         for seq_group in self.running:
             if seq_group.is_finished():
-                if cfs_logger:
-                    print(f"[CFS] seq {seq_group.request_id} finished")
+                #if cfs_logger:
+                #    print(f"[CFS] seq {seq_group.request_id} finished")
                 # Seq group finished
                 if self.use_async_output_proc:
                     assert self.output_proc_callback is not None
@@ -631,11 +632,18 @@ class Scheduler(ABC):
             for seq_group in self.waiting:
                 self._update_waiting_priority(seq_group)
 
+            self.waiting = deque(
+                sorted(self.waiting, key=lambda s: self.priority(s))
+            )
+
+        self.running = deque(
+            sorted(self.running, key=lambda s: self.priority(s), reverse=True)
+        )
+
         # === 2. Fill-up running ==============================================
         # === Add more seqs to running until max_num_seqs batch is filled.
 
         new_sched_seqs = []
-        should_sched_waiting = self._passed_delay(time.time())
 
         while should_sched_waiting and self.waiting and max_num_seqs_budget > 0:
             # Get waiting with highest priority
@@ -643,8 +651,8 @@ class Scheduler(ABC):
 
             # Waiting seqs can be cancelled async. Need to check if finished
             if new_seq.is_finished():
-                if cfs_logger:
-                    print(f"[CFS] seq {new_seq.request_id} finished")
+                #if cfs_logger:
+                #    print(f"[CFS] seq {new_seq.request_id} finished")
                 if self.use_async_output_proc:
                     assert self.output_proc_callback is not None
                     self.output_proc_callback(request_id=new_seq.request_id)
@@ -657,7 +665,7 @@ class Scheduler(ABC):
             if cfs_logger:
                 print(
                     f"[CFS][fillup] budget[{max_num_seqs_budget}] adding "
-                    f"seq {new_seq.request_id} with {new_seq.print_seq()}"
+                    f"seq {new_seq.request_id} with {self.print_seq(new_seq)}"
                 )
 
         # === 3. Preemption check =============================================
@@ -675,10 +683,10 @@ class Scheduler(ABC):
 
                 # Waiting seqs can be cancelled async. Need to check if finished
                 if waiting_seq_head.is_finished():
-                    if cfs_logger:
-                        print(
-                            f"[CFS] seq {waiting_seq_head.request_id} finished"
-                        )
+                    #if cfs_logger:
+                    #    print(
+                    #        f"[CFS] seq {waiting_seq_head.request_id} finished"
+                    #    )
                     if self.use_async_output_proc:
                         assert self.output_proc_callback is not None
                         self.output_proc_callback(
@@ -691,10 +699,10 @@ class Scheduler(ABC):
                 if self._should_preempt(seq_group, waiting_seq_head):
                     if cfs_logger:
                         print(
-                            f"[CFS][preempt] preempting {seq_group.request_id}[{seq_group.print_seq()}]"
+                            f"[CFS][preempt] preempting {seq_group.request_id}[{self.print_seq(seq_group)}]"
                         )
                         print(
-                            f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{waiting_seq_head.print_seq()}]"
+                            f"[CFS][preempt] inserting {waiting_seq_head.request_id}[{self.print_seq(waiting_seq_head)}]"
                         )
                     self.running.popleft()  # remove lowest priority
                     self.waiting.popleft()  # remove highest priority
@@ -1107,6 +1115,7 @@ class Scheduler(ABC):
 
     def _free_finished_seq_group(self, seq_group: SequenceGroup) -> None:
         if seq_group.is_finished():
+            print(f"[CFS] seq {seq_group.request_id} finished")
             # Free cross-attention block table, if it exists
             self._free_seq_group_cross_attn_blocks(seq_group)
 

@@ -40,6 +40,7 @@ class EEVDF(Scheduler):
         # the sequence. This value can change with the progress of the
         # execution.
         setattr(SequenceGroup, "total_vtime", 0)
+        setattr(SequenceGroup, "cur_vtime", 0)
         setattr(SequenceGroup, "expected_time_slice", 10)
         setattr(SequenceGroup, "priority", 1)
         setattr(SequenceGroup, "lag", 0)
@@ -54,24 +55,33 @@ class EEVDF(Scheduler):
     def _update_queue_size(self, n):
         self.queue_size = n
 
-        self.ideal_slice = (
-            self.max_num_seqs * self.sched_slice
-        ) / self.queue_size
+        if self.queue_size < self.max_num_seqs:
+            self.ideal_slice = 1
+        else:
+            self.ideal_slice = (self.max_num_seqs * self.sched_slice) / self.queue_size
 
     def _update_finished_priority(self, seq_group):
         pass
 
     def _update_running_priority(self, seq_group):
+        seq_group.cur_vtime += self.sched_slice
+
         # lag is how much time it used (sched_slice) minus how much
         # time it was owed (ideal_slice). reducing lag means running
         seq_group.lag -= self.sched_slice - self.ideal_slice
-        seq_group.vdeadline = seq_group.lag + seq_group.expected_time_slice
+        if seq_group.lag < 0:
+            seq_group.vdeadline = float("inf")
+        else:
+            seq_group.vdeadline = seq_group.lag + seq_group.expected_time_slice
         seq_group.total_vtime += self.sched_slice
 
     def _update_waiting_priority(self, seq_group):
         # didn't run last time, thus accumulating lag
         seq_group.lag += self.ideal_slice
-        seq_group.vdeadline = seq_group.lag + seq_group.expected_time_slice
+        if seq_group.lag < 0:
+            seq_group.vdeadline = float("inf")
+        else:
+            seq_group.vdeadline = seq_group.lag + seq_group.expected_time_slice
 
     def _priosched_should_update_waiting_1(self):
         return True
@@ -79,24 +89,31 @@ class EEVDF(Scheduler):
     def _can_preempt(self, seq_group):
         # preemption condition
         # return seq_group.cur_vtime >= self.min_vtime_run
-        return True
+        # return True
+        return seq_group.cur_vtime > seq_group.expected_time_slice * 1
 
     def _should_preempt(self, victim, sub):
-        return sub.vdeadline < victim.vdeadline
+        # print(f"--------testing {self.print_seq(victim)} -> {self.print_seq(sub)}")
+        # if self._can_preempt(victim):
+        #    print("    can preempt")
+        return self._can_preempt(victim) and sub.vdeadline < victim.vdeadline
 
     def _added_sequence_to_running(self, seq_group):
         # just executed some tokens and still didn't finished
-        if seq_group.total_vtime >= seq_group.expected_time_slice:
-            # Initial heuristic: double the expected time
-            # if the current time was not enough.
-            # TODO: try fibonacci?
-            seq_group.expected_time_slice *= 2
+        # if seq_group.total_vtime >= seq_group.expected_time_slice:
+        # Initial heuristic: double the expected time
+        # if the current time was not enough.
+        # TODO: try fibonacci?
+
+        # seq_group.expected_time_slice *= 2
+        seq_group.expected_time_slice += 40
+        seq_group.cur_vtime = 0
 
     def priority(self, seq_group):
-        return -seq_group.vdeadline
+        return seq_group.vdeadline
 
     def print_seq(self, seq_group):
         return (
-            f"lag={seq_group.lag} - vdeadline={seq_group.vdeadline} "
-            f"- {seq_group.total_vtime}/{seq_group.expected_time_slice}"
+            f"lag={seq_group.lag:.2f} - vdeadline={seq_group.vdeadline:.2f} "
+            f"- {seq_group.cur_vtime}/{seq_group.total_vtime}/{seq_group.expected_time_slice}"
         )
