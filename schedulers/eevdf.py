@@ -46,6 +46,8 @@ class EEVDF(Scheduler):
         setattr(SequenceGroup, "lag", 0)
         setattr(SequenceGroup, "vdeadline", 0)
 
+        setattr(SequenceGroup, "slice_increment", 10)
+
         # Number of tokens (or time spent) per sched step by each seq
         # If using multi-step scheduling, it would be more than 1
         # per max_num_seqs.
@@ -106,8 +108,10 @@ class EEVDF(Scheduler):
         # TODO: try fibonacci?
 
         # seq_group.expected_time_slice *= 2
-        seq_group.expected_time_slice += 40
+        seq_group.expected_time_slice += seq_group.slice_increment
+        seq_group.slice_increment *= 4
         seq_group.cur_vtime = 0
+        #seq_group.num_steps += 1
 
     def priority(self, seq_group):
         return seq_group.vdeadline

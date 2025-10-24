@@ -394,6 +394,10 @@ class Scheduler(ABC):
         # self.user_specified_preemption_mode = scheduler_config.preemption_mode
         self.user_specified_preemption_mode = PreemptionMode.RECOMPUTE
 
+        # To check how much preemption is done
+        setattr(SequenceGroup, "num_steps", 0)
+
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -848,6 +852,7 @@ class Scheduler(ABC):
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:
             self._added_sequence_to_running(seq_group)
+            seq_group.num_steps += 1
             if seq_group.is_prefill():
                 # Prefill need to allocate block space
                 self.block_manager.allocate(seq_group)
@@ -1115,7 +1120,7 @@ class Scheduler(ABC):
 
     def _free_finished_seq_group(self, seq_group: SequenceGroup) -> None:
         if seq_group.is_finished():
-            print(f"[CFS] seq {seq_group.request_id} finished")
+            print(f"[CFS] seq {seq_group.request_id} finished in {seq_group.num_steps} steps")
             # Free cross-attention block table, if it exists
             self._free_seq_group_cross_attn_blocks(seq_group)
 

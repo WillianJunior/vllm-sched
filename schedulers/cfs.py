@@ -84,5 +84,5 @@ class CFS(Scheduler):
     def priority(self, seq_group):
         return seq_group.total_vtime
 
-def print_seq(self, seq_group):
-    return f"Prio{seq_group.priority} - {seq_group.cur_vtime}/{seq_group.total_vtime}"
+    def print_seq(self, seq_group):
+        return f"Prio{seq_group.priority} - {seq_group.cur_vtime}/{seq_group.total_vtime}"
