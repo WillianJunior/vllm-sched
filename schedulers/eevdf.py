@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-# import enum
+import enum
+
 # import os
 # import random
 # import time
 # from collections import deque
 # from dataclasses import dataclass, field
 from typing import Callable, Optional
-from random import uniform, seed
+from random import seed, randint, uniform
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.sequence import SequenceGroup
@@ -23,6 +24,7 @@ class OracleFields(enum.Enum):
 
 
 KEY_TOKEN_IDX = 3
+
 
 class EEVDF(Scheduler):
     """docstring for EEVDF"""
@@ -45,8 +47,10 @@ class EEVDF(Scheduler):
 
         # Oracle stuff to test if predicting the len would result in SRTF
         self.using_oracle = True
-        noise = 0.5
-        random.seed(0) # to make it reproducible
+        noise = 2
+        max_expected_time = 1000
+        min_expected_time = 1
+        seed(0)  # to make it reproducible
         self.oracle = dict()
         with open("oracle_costs_sharegpt200.txt", "r") as file:
             for line in file:
@@ -56,9 +60,38 @@ class EEVDF(Scheduler):
                 value1 = int(parts[OracleFields.PROMPT.value])
                 value2 = int(parts[OracleFields.GENERATE.value])
 
-                # Add some noise...
-                value2 += value2 * uniform(-noise, noise)
-                self.oracle[key] = (key, value1, value2)
+                # Add some noise
+                # this is relative noise, does little harm
+                # noise_val = value2 * uniform(-noise, noise)
+                # print(f"{key} original {value2} noise: {noise_val}")
+                # value2 += noise_val
+                # value2 = max(1, value2)  # avoid negative numbers
+
+                # now some absolute noise
+                noise_val = uniform(-noise, noise) * randint(
+                    min_expected_time, max_expected_time
+                )
+
+                # bad :( except for small max_expected_time (400 is ok)
+                # noise_val = choice([-1, 1]) * randint(
+                #    min_expected_time, max_expected_time
+                # )
+
+                print(f"{key} original {value2} noise: {noise_val}")
+                value2 += noise_val
+                value2 = max(1, value2)  # avoid negative numbers
+
+                # just use a random number
+                # value2 = randint(min_expected_time, max_expected_time)
+
+                self.oracle[key] = [key, value1, value2]
+
+        # Just a different random with extra steps
+        # Also didn't work ...
+        # data = [gen_val for _, _, gen_val in self.oracle.values()]
+        # kde = gaussian_kde(data)
+        # for key in self.oracle.keys():
+        #    self.oracle[key][OracleFields.GENERATE.value] = max(int(kde.resample(1)), 1)
 
         # === EEVDF stuff... ==================================================
         # [Will]: Monkey patching SequenceGroup to have virtual runtimes.
@@ -100,7 +133,10 @@ class EEVDF(Scheduler):
         pass
 
     def _update_running_priority(self, seq_group):
-        if seq_group.expected_time_slice == self._base_expected_time_slice and self.using_oracle:
+        if (
+            seq_group.expected_time_slice == self._base_expected_time_slice
+            and self.using_oracle
+        ):
             seq_group.expected_time_slice = self._get_oracle(seq_group)
         seq_group.cur_vtime += self.sched_slice
 
@@ -114,7 +150,10 @@ class EEVDF(Scheduler):
         seq_group.total_vtime += self.sched_slice
 
     def _update_waiting_priority(self, seq_group):
-        if seq_group.expected_time_slice == self._base_expected_time_slice and self.using_oracle:
+        if (
+            seq_group.expected_time_slice == self._base_expected_time_slice
+            and self.using_oracle
+        ):
             seq_group.expected_time_slice = self._get_oracle(seq_group)
 
         # didn't run last time, thus accumulating lag
@@ -152,7 +191,7 @@ class EEVDF(Scheduler):
             seq_group.expected_time_slice += seq_group.slice_increment
             seq_group.slice_increment *= 4
         seq_group.cur_vtime = 0
-        #seq_group.num_steps += 1
+        # seq_group.num_steps += 1
 
     def priority(self, seq_group):
         return seq_group.vdeadline

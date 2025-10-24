@@ -7,7 +7,7 @@
 # import time
 # from collections import deque
 # from dataclasses import dataclass, field
-from typing import Callable, Deque, Dict, Iterable, List, Optional
+from typing import Callable, Optional
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.sequence import SequenceGroup
@@ -85,4 +85,6 @@ class CFS(Scheduler):
         return seq_group.total_vtime
 
     def print_seq(self, seq_group):
-        return f"Prio{seq_group.priority} - {seq_group.cur_vtime}/{seq_group.total_vtime}"
+        return (
+            f"Prio{seq_group.priority} - {seq_group.cur_vtime}/{seq_group.total_vtime}"
+        )
