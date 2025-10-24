@@ -8,12 +8,21 @@
 # from collections import deque
 # from dataclasses import dataclass, field
 from typing import Callable, Optional
+from random import uniform, seed
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.sequence import SequenceGroup
 
 from prioritySchedBase import Scheduler
 
+
+class OracleFields(enum.Enum):
+    KEY = 0
+    PROMPT = 1
+    GENERATE = 2
+
+
+KEY_TOKEN_IDX = 3
 
 class EEVDF(Scheduler):
     """docstring for EEVDF"""
@@ -34,14 +43,35 @@ class EEVDF(Scheduler):
             output_proc_callback,
         )
 
+        # Oracle stuff to test if predicting the len would result in SRTF
+        self.using_oracle = True
+        noise = 0.5
+        random.seed(0) # to make it reproducible
+        self.oracle = dict()
+        with open("oracle_costs_sharegpt200.txt", "r") as file:
+            for line in file:
+                parts = line.strip().split()
+                assert len(parts) == 3, "malformed lines"
+                key = int(parts[OracleFields.KEY.value])
+                value1 = int(parts[OracleFields.PROMPT.value])
+                value2 = int(parts[OracleFields.GENERATE.value])
+
+                # Add some noise...
+                value2 += value2 * uniform(-noise, noise)
+                self.oracle[key] = (key, value1, value2)
+
         # === EEVDF stuff... ==================================================
         # [Will]: Monkey patching SequenceGroup to have virtual runtimes.
         # expected_time_slice represents how much time is required to process
         # the sequence. This value can change with the progress of the
         # execution.
+        self._base_expected_time_slice = 10
+        if self.using_oracle:
+            self._base_expected_time_slice = -1
+
         setattr(SequenceGroup, "total_vtime", 0)
         setattr(SequenceGroup, "cur_vtime", 0)
-        setattr(SequenceGroup, "expected_time_slice", 10)
+        setattr(SequenceGroup, "expected_time_slice", self._base_expected_time_slice)
         setattr(SequenceGroup, "priority", 1)
         setattr(SequenceGroup, "lag", 0)
         setattr(SequenceGroup, "vdeadline", 0)
@@ -53,6 +83,10 @@ class EEVDF(Scheduler):
         # per max_num_seqs.
         self.sched_slice = 1
         self.max_num_seqs = self.scheduler_config.max_num_seqs
+
+    def _get_oracle(self, seq_group):
+        key = seq_group.first_seq.inputs["prompt_token_ids"][KEY_TOKEN_IDX]
+        return self.oracle[key][OracleFields.GENERATE.value]
 
     def _update_queue_size(self, n):
         self.queue_size = n
@@ -66,6 +100,8 @@ class EEVDF(Scheduler):
         pass
 
     def _update_running_priority(self, seq_group):
+        if seq_group.expected_time_slice == self._base_expected_time_slice and self.using_oracle:
+            seq_group.expected_time_slice = self._get_oracle(seq_group)
         seq_group.cur_vtime += self.sched_slice
 
         # lag is how much time it used (sched_slice) minus how much
@@ -78,6 +114,9 @@ class EEVDF(Scheduler):
         seq_group.total_vtime += self.sched_slice
 
     def _update_waiting_priority(self, seq_group):
+        if seq_group.expected_time_slice == self._base_expected_time_slice and self.using_oracle:
+            seq_group.expected_time_slice = self._get_oracle(seq_group)
+
         # didn't run last time, thus accumulating lag
         seq_group.lag += self.ideal_slice
         if seq_group.lag < 0:
@@ -107,9 +146,11 @@ class EEVDF(Scheduler):
         # if the current time was not enough.
         # TODO: try fibonacci?
 
-        # seq_group.expected_time_slice *= 2
-        seq_group.expected_time_slice += seq_group.slice_increment
-        seq_group.slice_increment *= 4
+        # Expected time wasn't enough, add more time
+        if seq_group.expected_time_slice <= seq_group.total_vtime:
+            # seq_group.expected_time_slice *= 2
+            seq_group.expected_time_slice += seq_group.slice_increment
+            seq_group.slice_increment *= 4
         seq_group.cur_vtime = 0
         #seq_group.num_steps += 1
 
