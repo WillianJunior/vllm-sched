@@ -22,7 +22,7 @@ def main():
     dset_size = len(prompts)
     embeddings_path = args.embeddings
     if embeddings_path is None:
-        embeddings_path = f"embeddings-{dset_size}.npy"
+        embeddings_path = f"embeddings/embeddings-{dset_size}.npy"
     embeddings, is_new_embeddings = get_embeddings(
         prompts, args.llm_model, embeddings_path, args.force_embedding
     )
@@ -36,7 +36,7 @@ def main():
     # Train random forest model. Force training if new embeddings.
     random_forest_model_path = args.random_forest_model
     if random_forest_model_path is None:
-        random_forest_model_path = f"random-forest-model-{dset_size}.pkl"
+        random_forest_model_path = f"models/random-forest-model-{dset_size}.pkl"
     random_forest_model = get_random_forest_model(
         X_train,
         y_train,
@@ -323,11 +323,11 @@ def parse_args():
 
     parser.add_argument(
         "--targets",
-        default="target-len.txt",
+        default="targets/target.txt",
         help="Target estimation file. Format: one expected int value per line "
         "This file can have DSET_SIZE lines, which is fewer than the prompts "
         "file. If so, only DSET_SIZE lines are read from the prompts file "
-        "(default: target-len.txt).",
+        "(default: targets/target.txt).",
     )
 
     parser.add_argument(
@@ -343,14 +343,15 @@ def parse_args():
         "does not exist, embeddings are calculated from the prompts file. If "
         "it exists, it is loaded and trained. If the embeddings size (number "
         "of embeddings is different from the DSET_SIZE, the embeddings are "
-        "calculated and saved to file. (default: embeddings-<DSET_SIZE>.npy).",
+        "calculated and saved to file. "
+        "(default: embeddings/embeddings-<DSET_SIZE>.npy).",
     )
 
     parser.add_argument(
         "--random-forest-model",
         help="Path to the random forest model. After training, the model is "
         "saved in this path. If the file exists, the model is loaded. "
-        "(default: random-forest-model-<DSET_SIZE>.pkl).",
+        "(default: models/random-forest-model-<DSET_SIZE>.pkl).",
     )
 
     parser.add_argument(
