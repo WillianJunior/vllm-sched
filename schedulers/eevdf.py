@@ -10,6 +10,8 @@ import enum
 # from dataclasses import dataclass, field
 from typing import Callable, Optional
 from random import seed, randint, uniform
+import joblib
+import numpy as np
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.sequence import SequenceGroup
@@ -86,6 +88,11 @@ class EEVDF(Scheduler):
 
                 self.oracle[key] = [key, value1, value2]
 
+        # Load estimator model
+        self.estimator = joblib.load(
+            "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/llm-len-regression/models/random-forest-model-335.pkl.qrf"
+        )
+
         # Just a different random with extra steps
         # Also didn't work ...
         # data = [gen_val for _, _, gen_val in self.oracle.values()]
@@ -117,6 +124,68 @@ class EEVDF(Scheduler):
         self.sched_slice = 1
         self.max_num_seqs = self.scheduler_config.max_num_seqs
 
+    def _QRF(self, seq_group, quantiles=[0.9]):
+        """
+        Predict quantiles for X using a trained RandomForestRegressor.
+        Efficient implementation using vectorized leaf mapping.
+        From ChatGPT...
+        """
+
+        # get x from seq_group
+        # this implementation allows for efficient vectorized estimation.
+        # not used yet....
+        x = seq_group.first_seq.data.prompt_embeds
+        # print(seq_group.first_seq)
+        # print(seq_group.first_seq.data)
+        # print(seq_group.first_seq.data.prompt_embeds)
+
+        # print(f"seq {seq_group} expected: {self._get_oracle(seq_group)}")
+
+        # hasn't been prefilled yet
+        # return a default value
+        if x is None:
+            return 20
+
+        print(f"seq {seq_group} expected: {self._get_oracle(seq_group)}")
+        print(seq_group.first_seq)
+        print(seq_group.first_seq.data)
+        print(seq_group.first_seq.data.prompt_embeds)
+        X = np.array([x])
+
+        random_forest_model, X_train, y_train = self.estimator
+
+        n_samples = X.shape[0]
+        all_values = [
+            [] for _ in range(n_samples)
+        ]  # collect leaf values for each sample
+
+        for tree in random_forest_model.estimators_:
+            # leaf indices for train and test
+            train_leaves = tree.apply(X_train)
+            test_leaves = tree.apply(X)
+
+            # map each test sample to the training samples in the same leaf
+            leaf_to_values = {}
+            for leaf, y_val in zip(train_leaves, y_train):
+                leaf_to_values.setdefault(leaf, []).append(y_val)
+
+            # collect leaf values for each test sample
+            for i, leaf in enumerate(test_leaves):
+                all_values[i].extend(leaf_to_values[leaf])
+
+        # compute requested quantiles
+        quantile_preds = {
+            q: np.array([np.quantile(v, q) for v in all_values]) for q in quantiles
+        }
+
+        # Just return the quantile predictions if only one is asked.
+        if len(quantiles) == 1:
+            print(f"predicted: {quantile_preds[quantiles[0]]}")
+
+            return quantile_preds[quantiles[0]]
+        else:
+            return quantile_preds
+
     def _get_oracle(self, seq_group):
         key = seq_group.first_seq.inputs["prompt_token_ids"][KEY_TOKEN_IDX]
         return self.oracle[key][OracleFields.GENERATE.value]
@@ -133,11 +202,13 @@ class EEVDF(Scheduler):
         pass
 
     def _update_running_priority(self, seq_group):
-        if (
-            seq_group.expected_time_slice == self._base_expected_time_slice
-            and self.using_oracle
-        ):
-            seq_group.expected_time_slice = self._get_oracle(seq_group)
+        # if (
+        #    seq_group.expected_time_slice == self._base_expected_time_slice
+        #    and self.using_oracle
+        # ):
+        # seq_group.expected_time_slice = self._get_oracle(seq_group)
+        seq_group.expected_time_slice = self._QRF(seq_group)
+
         seq_group.cur_vtime += self.sched_slice
 
         # lag is how much time it used (sched_slice) minus how much
@@ -150,11 +221,12 @@ class EEVDF(Scheduler):
         seq_group.total_vtime += self.sched_slice
 
     def _update_waiting_priority(self, seq_group):
-        if (
-            seq_group.expected_time_slice == self._base_expected_time_slice
-            and self.using_oracle
-        ):
-            seq_group.expected_time_slice = self._get_oracle(seq_group)
+        # if (
+        #    seq_group.expected_time_slice == self._base_expected_time_slice
+        #    and self.using_oracle
+        # ):
+        # seq_group.expected_time_slice = self._get_oracle(seq_group)
+        seq_group.expected_time_slice = self._QRF(seq_group)
 
         # didn't run last time, thus accumulating lag
         seq_group.lag += self.ideal_slice

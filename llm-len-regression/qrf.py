@@ -207,7 +207,9 @@ def get_random_forest_model(
 
     t1 = time()
     print(f"Trained in {t1 - t0:.2f} secs")
-
+    
+    qrf_full_model = (random_forest_model, X_train, y_train)
+    joblib.dump(qrf_full_model, random_forest_model_path + ".qrf")
     joblib.dump(random_forest_model, random_forest_model_path)
     print(f"Saved random forest model to {random_forest_model_path}")
 
