@@ -4,6 +4,10 @@ env/*
 datasets/*
 !datasets/.gitkeep
 vllm
+*.npy
+*.txt
+*.pkl
+*.out
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
