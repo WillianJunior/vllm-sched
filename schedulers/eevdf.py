@@ -111,7 +111,9 @@ class EEVDF(Scheduler):
 
         setattr(SequenceGroup, "total_vtime", 0)
         setattr(SequenceGroup, "cur_vtime", 0)
-        setattr(SequenceGroup, "expected_time_slice", self._base_expected_time_slice)
+        setattr(
+            SequenceGroup, "expected_time_slice", self._base_expected_time_slice
+        )
         setattr(SequenceGroup, "priority", 1)
         setattr(SequenceGroup, "lag", 0)
         setattr(SequenceGroup, "vdeadline", 0)
@@ -175,7 +177,8 @@ class EEVDF(Scheduler):
 
         # compute requested quantiles
         quantile_preds = {
-            q: np.array([np.quantile(v, q) for v in all_values]) for q in quantiles
+            q: np.array([np.quantile(v, q) for v in all_values])
+            for q in quantiles
         }
 
         # Just return the quantile predictions if only one is asked.
@@ -196,17 +199,19 @@ class EEVDF(Scheduler):
         if self.queue_size < self.max_num_seqs:
             self.ideal_slice = 1
         else:
-            self.ideal_slice = (self.max_num_seqs * self.sched_slice) / self.queue_size
+            self.ideal_slice = (
+                self.max_num_seqs * self.sched_slice
+            ) / self.queue_size
 
     def _update_finished_priority(self, seq_group):
         pass
 
     def _update_running_priority(self, seq_group):
-        # if (
-        #    seq_group.expected_time_slice == self._base_expected_time_slice
-        #    and self.using_oracle
-        # ):
-        # seq_group.expected_time_slice = self._get_oracle(seq_group)
+        if (
+            seq_group.expected_time_slice == self._base_expected_time_slice
+            and self.using_oracle
+        ):
+            seq_group.expected_time_slice = self._get_oracle(seq_group)
         seq_group.expected_time_slice = self._QRF(seq_group)
 
         seq_group.cur_vtime += self.sched_slice

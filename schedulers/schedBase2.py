@@ -405,6 +405,10 @@ class Scheduler(ABC):
 
         # To check how much preemption is done
         setattr(SequenceGroup, "num_steps", 0)
+        setattr(SequenceGroup, "is_timedout", False)
+        setattr(SequenceGroup, "is_new_seq", False)
+
+        self.new_seqs = []
 
         # Oracle stuff to test if predicting the len would result in SRTF
         self.using_oracle = True
@@ -466,17 +470,19 @@ class Scheduler(ABC):
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
+        seq_group.is_new_seq = True
+        self.new_seqs.append(seq_group)
         self.waiting.append(seq_group)
 
-    def _add_seq_group_to_running(self, seq_group: SequenceGroup) -> None:
-        # Add sequence groups to the running queue.
-        # Only for testing purposes.
-        self.running.append(seq_group)
+    # def _add_seq_group_to_running(self, seq_group: SequenceGroup) -> None:
+    #     # Add sequence groups to the running queue.
+    #     # Only for testing purposes.
+    #     self.running.append(seq_group)
 
-    def _add_seq_group_to_swapped(self, seq_group: SequenceGroup) -> None:
-        # Add sequence groups to the swapped queue.
-        # Only for testing purposes.
-        self.swapped.append(seq_group)
+    # def _add_seq_group_to_swapped(self, seq_group: SequenceGroup) -> None:
+    #     # Add sequence groups to the swapped queue.
+    #     # Only for testing purposes.
+    #     self.swapped.append(seq_group)
 
     def abort_seq_group(
         self,
@@ -636,7 +642,13 @@ class Scheduler(ABC):
     def print_seq(self, seq_group):
         raise NotImplementedError("print_seq")
 
+    @abstractmethod
+    def _derived_sched(self) -> SchedulerOutputs:
+        raise NotImplementedError("_derived_sched")
+
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
+        return self._derived_sched()
+
         """Schedule queued requests.
 
         Chunked prefill allows to chunk prefill requests, batch them together
@@ -653,21 +665,23 @@ class Scheduler(ABC):
 
         # print("xxxxxxxxxxxxxxxxxxxxxxx sched start xxxxxxxxxxxxxxxxxxxxxxxx")
 
-        # Create partial prefill metadata
-        partial_prefill_metadata = PartialPrefillMetadata.from_queues(
-            running=self.running,
-            waiting=self.waiting,
-            scheduler_config=self.scheduler_config,
-        )
-
         cfs_logger = True
         should_sched_waiting = self._passed_delay(time.time())
+
+        # Get len predictions for new_seqs
+        for seq_group in self.new_seqs:
+            if self.using_oracle:
+                seq_group.timeslice = self._get_oracle(seq_group)
+            elif self.using_qrf:
+                seq_group.timeslice = self._get_qrf(seq_group)
 
         # === 1. Update priorities ============================================
         # === Update vtimes and finish seqs
 
         max_num_seqs_budget = self.scheduler_config.max_num_seqs
-        self._update_queue_size(len(self.waiting) + len(self.running))
+        # self._update_queue_size(len(self.waiting) + len(self.running))
+
+        timedout = []
 
         for seq_group in self.running:
             if seq_group.is_finished():
@@ -679,22 +693,24 @@ class Scheduler(ABC):
                     self.output_proc_callback(request_id=seq_group.request_id)
                 self._free_finished_seq_group(seq_group)
                 self.running.remove(seq_group)
-
-                self._update_finished_priority(seq_group)
             else:
-                max_num_seqs_budget -= 1
                 self._update_running_priority(seq_group)
 
-        if self._priosched_should_update_waiting_1():
-            for seq_group in self.waiting:
-                self._update_waiting_priority(seq_group)
+                # Check timeout
+                if seq_group.cur_vtime >= timeslice:
+                    seq_group.is_timedout = True
+                    timedout.append(seq_group)
+                    # waiting.append(seq_group)
+                    self.running.remove(seq_group)
+                else:
+                    max_num_seqs_budget -= 1
 
-            self.waiting = deque(
-                sorted(self.waiting, key=lambda s: self.priority(s))
-            )
+        for seq_group in self.waiting:
+            self._update_waiting_priority(seq_group)
+        self.waiting.extend(timedout)
 
-        self.running = deque(
-            sorted(self.running, key=lambda s: self.priority(s), reverse=True)
+        self.waiting = deque(
+            sorted(self.waiting, key=lambda s: self.priority(s))
         )
 
         # === 2. Fill-up running ==============================================
@@ -702,7 +718,7 @@ class Scheduler(ABC):
 
         new_sched_seqs = []
 
-        while should_sched_waiting and self.waiting and max_num_seqs_budget > 0:
+        while self.waiting and max_num_seqs_budget > 0:
             # Get waiting with highest priority
             new_seq = self.waiting.popleft()
 
@@ -717,6 +733,13 @@ class Scheduler(ABC):
                 self.waiting.remove(new_seq)
                 continue
 
+            if new_seq.is_new_seq:
+                self.new_seqs.remove(new_seq)
+                is_new_seq = False
+
+            # if new_seq.state == TIMEDOUT:
+            #     rescheduled.append(new_seq)
+            # else:
             new_sched_seqs.append(new_seq)
             max_num_seqs_budget -= 1
             if cfs_logger:
@@ -725,55 +748,57 @@ class Scheduler(ABC):
                     f"seq {new_seq.request_id} with {self.print_seq(new_seq)}"
                 )
 
+        # # Sanity check. If seq_group was NEW, then new_seqs_head
+        # # should have been scheduled instead in 2. If seq_group is
+        # # waiting, then it would also have been scheduled before
+        # # new_seqs_head in 2.
+        # So, none of the new_sched_seqs seqs could be swapped.
+        # self.running.extend(new_sched_seqs)
+
         # === 3. Preemption check =============================================
-        # === Preempt and swap seqs, when necessary
+        # === Try to schedule the remaining new seqs. Preempt if necessary
+
+        self.running = deque(
+            sorted(self.running, key=lambda s: self.priority(s), reverse=True)
+        )
 
         preempted_seqs = []
 
-        if should_sched_waiting and max_num_seqs_budget == 0 and self.waiting:
-            while self.running and self.waiting:
-                # Get seq with lowest priority
-                seq_group = self.running[0]
+        while self.new_seqs:
+            # Get seq with lowest priority
+            seq_group = self.running[0]
 
-                # Get waiting with highest priority
-                waiting_seq_head = self.waiting[0]
+            # Get new_seqs with highest priority
+            new_seqs_head = self.new_seqs[0]
 
-                # Waiting seqs can be cancelled async. Need to check if finished
-                if waiting_seq_head.is_finished():
-                    # if cfs_logger:
-                    #    print(
-                    #        f"[CFS] seq {waiting_seq_head.request_id} finished"
-                    #    )
-                    if self.use_async_output_proc:
-                        assert self.output_proc_callback is not None
-                        self.output_proc_callback(
-                            request_id=waiting_seq_head.request_id
-                        )
-                    self._free_finished_seq_group(waiting_seq_head)
-                    self.waiting.remove(waiting_seq_head)
-                    continue
+            if self._should_preempt(seq_group, new_seqs_head):
+                if cfs_logger:
+                    print(
+                        f"[CFS][preempt] preempting "
+                        f"{seq_group.request_id}"
+                        f"[{self.print_seq(seq_group)}]"
+                    )
+                    print(
+                        f"[CFS][preempt] inserting "
+                        f"{waiting_seq_head.request_id}"
+                        f"[{self.print_seq(waiting_seq_head)}]"
+                    )
+                new_sched_seqs.append(new_seqs_head)
+                self.new_seqs.remove(new_seqs_head)
 
-                if self._should_preempt(seq_group, waiting_seq_head):
-                    if cfs_logger:
-                        print(
-                            f"[CFS][preempt] preempting "
-                            f"{seq_group.request_id}"
-                            f"[{self.print_seq(seq_group)}]"
-                        )
-                        print(
-                            f"[CFS][preempt] inserting "
-                            f"{waiting_seq_head.request_id}"
-                            f"[{self.print_seq(waiting_seq_head)}]"
-                        )
-                    self.running.popleft()  # remove lowest priority
-                    self.waiting.popleft()  # remove highest priority
-                    preempted_seqs.append(seq_group)
-                    new_sched_seqs.append(waiting_seq_head)
-                else:
-                    # If the current seq_group of should not be preempted,
-                    # then the following seqs with higher priority
-                    # won't be also.
-                    break
+                # # Sanity check. If seq_group was NEW, then new_seqs_head
+                # # should have been scheduled instead in 2. If seq_group is
+                # # waiting, then it would also have been scheduled before
+                # # new_seqs_head in 2.
+                # assert(seq_group.state == RUNNING)
+
+                self.running.popleft()  # remove lowest priority
+                preempted_seqs.append(seq_group)
+            else:
+                # If the current seq_group of should not be preempted,
+                # then the following seqs with higher priority
+                # won't be also.
+                break
 
         # === 4. OOM check ====================================================
         # === Preempt and swap seqs when OOM
@@ -884,6 +909,8 @@ class Scheduler(ABC):
         # new_sched_seqs
         # preempted_seqs
 
+        # timedout = []
+
         prefill_seq_groups: List[ScheduledSequenceGroup] = []
         decode_seq_groups: List[ScheduledSequenceGroup] = []
 
@@ -902,9 +929,13 @@ class Scheduler(ABC):
             self._swap_out(seq_group, blocks_to_swap_out)
 
         self.waiting.extend(preempted_seqs)
-        self.waiting = deque(
-            sorted(self.waiting, key=lambda s: self.priority(s))
-        )
+
+        # Add the remaining new_seqs with low priority
+        self.waiting.extend(self.new_seqs)
+
+        # self.waiting = deque(
+        #     sorted(self.waiting, key=lambda s: self.priority(s))
+        # )
 
         # Manage blocks for new scheduled seqs
         for seq_group in new_sched_seqs:
@@ -913,9 +944,12 @@ class Scheduler(ABC):
             if seq_group.is_prefill():
                 # Prefill need to allocate block space
                 self.block_manager.allocate(seq_group)
-            else:
+            elif not seq_group.is_timedout:
+                # If timedout, blocks are already in memory.
                 # Otherwise, need to swap-in blocks
                 self._swap_in(seq_group, blocks_to_swap_in)
+            else:
+                seq_group.is_timedout = False
 
         # No need to sort self.running since it was sorted before OOC check
         # and it could only remove seqs, thus ordering is kept.
@@ -925,6 +959,11 @@ class Scheduler(ABC):
         # and appending a slot to each seq.
         num_batched_tokens = 0
         for seq_group in self.running:
+            if len(self.waiting) == 0:
+                # If there is no other seq waiting, do not keep
+                # accumulating negative lag.
+                seq_group.lag = 0
+
             scheduled_seq_group: ScheduledSequenceGroup = (
                 self._scheduled_seq_group_cache[self.cache_id].get_object()
             )
