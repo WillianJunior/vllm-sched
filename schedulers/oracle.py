@@ -1877,7 +1877,7 @@ class Scheduler:
         seq_group_id = "?"
         if req_id:
             seq_group_id = self.seq2id_map[req_id]
-            print(f"Finished {req_id} prompt {seq.get_prompt_len()} output {seq.get_output_len()} total {seq.get_len()}")
+            print(f"Finished {req_id} REQ_TOKEN: {seq.inputs['prompt_token_ids'][3]} prompt_len:{seq.get_prompt_len()} output_len:{seq.get_output_len()} total:{seq.get_len()}")
         self.block_manager.free(seq)
 
     def remove_seq_from_computed_blocks_tracker(

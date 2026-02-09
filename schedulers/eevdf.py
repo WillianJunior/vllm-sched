@@ -49,12 +49,14 @@ class EEVDF(Scheduler):
 
         # Oracle stuff to test if predicting the len would result in SRTF
         self.using_oracle = True
-        noise = 2
+        noise = 0
         max_expected_time = 1000
         min_expected_time = 1
         seed(0)  # to make it reproducible
         self.oracle = dict()
-        with open("oracle_costs_sharegpt200.txt", "r") as file:
+        #with open("oracle_costs_sharegpt200.txt", "r") as file:
+        with open(f"oracle.txt", "r") as file:
+            next(file) # skip first line of columns name
             for line in file:
                 parts = line.strip().split()
                 assert len(parts) == 3, "malformed lines"
@@ -89,9 +91,9 @@ class EEVDF(Scheduler):
                 self.oracle[key] = [key, value1, value2]
 
         # Load estimator model
-        self.estimator = joblib.load(
-            "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/llm-len-regression/models/random-forest-model-335.pkl.qrf"
-        )
+        #self.estimator = joblib.load(
+        #    "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/llm-len-regression/models/random-forest-model-335.pkl.qrf"
+        #)
 
         # Just a different random with extra steps
         # Also didn't work ...
@@ -111,9 +113,7 @@ class EEVDF(Scheduler):
 
         setattr(SequenceGroup, "total_vtime", 0)
         setattr(SequenceGroup, "cur_vtime", 0)
-        setattr(
-            SequenceGroup, "expected_time_slice", self._base_expected_time_slice
-        )
+        setattr(SequenceGroup, "expected_time_slice", self._base_expected_time_slice)
         setattr(SequenceGroup, "priority", 1)
         setattr(SequenceGroup, "lag", 0)
         setattr(SequenceGroup, "vdeadline", 0)
@@ -126,72 +126,12 @@ class EEVDF(Scheduler):
         self.sched_slice = 1
         self.max_num_seqs = self.scheduler_config.max_num_seqs
 
-    def _QRF(self, seq_group, quantiles=[0.9]):
-        """
-        Predict quantiles for X using a trained RandomForestRegressor.
-        Efficient implementation using vectorized leaf mapping.
-        From ChatGPT...
-        """
-
-        # get x from seq_group
-        # this implementation allows for efficient vectorized estimation.
-        # not used yet....
-        x = seq_group.first_seq.data.prompt_embeds
-        # print(seq_group.first_seq)
-        # print(seq_group.first_seq.data)
-        # print(seq_group.first_seq.data.prompt_embeds)
-
-        # print(f"seq {seq_group} expected: {self._get_oracle(seq_group)}")
-
-        # hasn't been prefilled yet
-        # return a default value
-        if x is None:
-            return 20
-
-        print(f"seq {seq_group} expected: {self._get_oracle(seq_group)}")
-        print(seq_group.first_seq)
-        print(seq_group.first_seq.data)
-        print(seq_group.first_seq.data.prompt_embeds)
-        X = np.array([x])
-
-        random_forest_model, X_train, y_train = self.estimator
-
-        n_samples = X.shape[0]
-        all_values = [
-            [] for _ in range(n_samples)
-        ]  # collect leaf values for each sample
-
-        for tree in random_forest_model.estimators_:
-            # leaf indices for train and test
-            train_leaves = tree.apply(X_train)
-            test_leaves = tree.apply(X)
-
-            # map each test sample to the training samples in the same leaf
-            leaf_to_values = {}
-            for leaf, y_val in zip(train_leaves, y_train):
-                leaf_to_values.setdefault(leaf, []).append(y_val)
-
-            # collect leaf values for each test sample
-            for i, leaf in enumerate(test_leaves):
-                all_values[i].extend(leaf_to_values[leaf])
-
-        # compute requested quantiles
-        quantile_preds = {
-            q: np.array([np.quantile(v, q) for v in all_values])
-            for q in quantiles
-        }
-
-        # Just return the quantile predictions if only one is asked.
-        if len(quantiles) == 1:
-            print(f"predicted: {quantile_preds[quantiles[0]]}")
-
-            return quantile_preds[quantiles[0]]
-        else:
-            return quantile_preds
-
     def _get_oracle(self, seq_group):
-        key = seq_group.first_seq.inputs["prompt_token_ids"][KEY_TOKEN_IDX]
-        return self.oracle[key][OracleFields.GENERATE.value]
+        #key = seq_group.first_seq.inputs["prompt_token_ids"][KEY_TOKEN_IDX]
+        prompt_tokens = seq_group.first_seq.inputs["prompt_token_ids"]
+        # Token 60 is ']' and token[3] is '[', concat all between
+        key = "".join(map(str, prompt_tokens[3:prompt_tokens.index(60)]))
+        return self.oracle[int(key)][OracleFields.GENERATE.value]
 
     def _update_queue_size(self, n):
         self.queue_size = n
@@ -199,9 +139,7 @@ class EEVDF(Scheduler):
         if self.queue_size < self.max_num_seqs:
             self.ideal_slice = 1
         else:
-            self.ideal_slice = (
-                self.max_num_seqs * self.sched_slice
-            ) / self.queue_size
+            self.ideal_slice = (self.max_num_seqs * self.sched_slice) / self.queue_size
 
     def _update_finished_priority(self, seq_group):
         pass
@@ -212,7 +150,6 @@ class EEVDF(Scheduler):
             and self.using_oracle
         ):
             seq_group.expected_time_slice = self._get_oracle(seq_group)
-        seq_group.expected_time_slice = self._QRF(seq_group)
 
         seq_group.cur_vtime += self.sched_slice
 
@@ -226,12 +163,11 @@ class EEVDF(Scheduler):
         seq_group.total_vtime += self.sched_slice
 
     def _update_waiting_priority(self, seq_group):
-        # if (
-        #    seq_group.expected_time_slice == self._base_expected_time_slice
-        #    and self.using_oracle
-        # ):
-        # seq_group.expected_time_slice = self._get_oracle(seq_group)
-        seq_group.expected_time_slice = self._QRF(seq_group)
+        if (
+            seq_group.expected_time_slice == self._base_expected_time_slice
+            and self.using_oracle
+        ):
+            seq_group.expected_time_slice = self._get_oracle(seq_group)
 
         # didn't run last time, thus accumulating lag
         seq_group.lag += self.ideal_slice

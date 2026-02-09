@@ -28,6 +28,8 @@ from vllm.sequence import (
 )
 from vllm.utils import Device, PyObjectCache
 
+from random import seed, randint, uniform
+
 logger = init_logger(__name__)
 
 # Test-only. If configured, decode is preempted with
@@ -408,7 +410,7 @@ class Scheduler(ABC):
 
         # Oracle stuff to test if predicting the len would result in SRTF
         self.using_oracle = True
-        noise = 2
+        noise = 0
         max_expected_time = 1000
         min_expected_time = 1
         seed(0)  # to make it reproducible
@@ -714,7 +716,6 @@ class Scheduler(ABC):
                     assert self.output_proc_callback is not None
                     self.output_proc_callback(request_id=new_seq.request_id)
                 self._free_finished_seq_group(new_seq)
-                self.waiting.remove(new_seq)
                 continue
 
             new_sched_seqs.append(new_seq)

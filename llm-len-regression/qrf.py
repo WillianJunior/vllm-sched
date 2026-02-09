@@ -14,8 +14,11 @@ import joblib
 def main():
     args = parse_args()
 
+    # Not checking results
+    need_targets = not args.get_predictions_only
+
     prompts, y = load_dataset(
-        args.prompts, args.targets, args.filter_min_len, args.filter_max_len
+        args.prompts, args.targets, args.filter_min_len, args.filter_max_len, need_targets
     )
 
     # Get embeddings
@@ -29,9 +32,11 @@ def main():
 
     # Prepare the training and test dataset
     X = embeddings
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+    X_train, y_train, X_test, y_test = None, None, None, None
+    if not args.get_predictions_only:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
 
     # Train random forest model. Force training if new embeddings.
     random_forest_model_path = args.random_forest_model
@@ -46,13 +51,19 @@ def main():
         args.force_training or is_new_embeddings,
     )
 
-    # Evaluate model
-    evaluate_forest_model(random_forest_model, X_train, y_train, X_test, y_test)
+    if args.get_predictions_only:
+        get_predictions(random_forest_model, X)
+    else:
+        # Evaluate model
+        evaluate_forest_model(random_forest_model, X_train, y_train, X_test, y_test)
 
 
-def load_dataset(prompts_path, targets_path, min_len=-1, max_len=-1):
+def load_dataset(prompts_path, targets_path, min_len=-1, max_len=-1, need_targets=True):
     with open(prompts_path, "r", encoding="utf-8") as f:
         prompts_raw = [line.strip() for line in f]
+    
+    if not need_targets:
+        return prompts_raw, None
 
     with open(targets_path, "r", encoding="utf-8") as f:
         y_raw = [line.strip() for line in f]
@@ -143,6 +154,9 @@ def get_embeddings(
 
             all_embeddings.append(batch_embeddings.cpu().numpy())
 
+            del inputs, outputs
+            torch.cuda.empty_cache()
+
     # Concatenate all batches
     embeddings = np.vstack(all_embeddings)
 
@@ -165,9 +179,13 @@ def get_random_forest_model(
 ):
     # Check if random forest model already exist
     if os.path.exists(random_forest_model_path) and not force_training:
-        random_forest_model = joblib.load(random_forest_model_path)
         print(f"Random forest model loaded form {random_forest_model_path}")
-        return random_forest_model
+        if (random_forest_model_path.split(".")[-1] == "qrf"):
+            random_forest_model, X_train, y_train = joblib.load(random_forest_model_path)
+            return random_forest_model, X_train, y_train
+        else:
+            random_forest_model = joblib.load(random_forest_model_path)
+            return random_forest_model
 
     t0 = time()
     n_estimators_total = 200
@@ -304,6 +322,17 @@ def QRF(random_forest_model, X, X_train, y_train, quantiles=[0.9]):
     else:
         return quantile_preds
 
+def get_predictions(random_forest_model, X):
+    model, X_Train, y_train = random_forest_model
+
+    def batches(lst, size=10):
+        for i in range(0, len(lst), size):
+            yield lst[i:i+size]
+
+    for batch in batches(X, 1000):
+        print(QRF(model, batch,  X_Train, y_train))
+
+
 
 def parse_args():
     """
@@ -384,6 +413,13 @@ def parse_args():
         help="Filter out all prompts which generated less then MIN_LEN "
         "tokens. Doesn't filter by default.",
     )
+
+    parser.add_argument(
+        "--get-predictions-only",
+        action="store_true",
+        help="Just print the predictions for each prompt line. Disables --filter-*-len.",
+    )
+
 
     # # Optional parameter (integer)
     # parser.add_argument(

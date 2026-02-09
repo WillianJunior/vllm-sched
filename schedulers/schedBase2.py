@@ -10,6 +10,7 @@ from typing import Callable, Deque, Dict, Iterable, List, Optional
 from typing import Sequence as GenericSequence
 from typing import Set, Tuple, Union
 from abc import ABC, abstractmethod
+from random import seed, randint, uniform
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import BlockSpaceManager
@@ -406,7 +407,7 @@ class Scheduler(ABC):
         # To check how much preemption is done
         setattr(SequenceGroup, "num_steps", 0)
         setattr(SequenceGroup, "is_timedout", False)
-        setattr(SequenceGroup, "is_new_seq", False)
+        setattr(SequenceGroup, "is_new_seq", True)
 
         self.new_seqs = []
 
@@ -470,7 +471,6 @@ class Scheduler(ABC):
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
-        seq_group.is_new_seq = True
         self.new_seqs.append(seq_group)
         self.waiting.append(seq_group)
 
@@ -602,25 +602,12 @@ class Scheduler(ABC):
             return prompt_limit
 
     @abstractmethod
-    def _update_queue_size(self, n):
-        # required for EEVDF
-        pass
-
-    @abstractmethod
-    def _update_finished_priority(self, seq_group):
-        raise NotImplementedError("_update_finished_priority")
-
-    @abstractmethod
     def _update_running_priority(self, seq_group):
         raise NotImplementedError("_update_running_priority")
 
     @abstractmethod
     def _update_waiting_priority(self, seq_group):
         raise NotImplementedError("_update_waiting_priority")
-
-    @abstractmethod
-    def _priosched_should_update_waiting_1(self):
-        raise NotImplementedError("_priosched_should_update_waiting_1")
 
     @abstractmethod
     def _can_preempt(self, seq_group):
@@ -642,13 +629,8 @@ class Scheduler(ABC):
     def print_seq(self, seq_group):
         raise NotImplementedError("print_seq")
 
-    @abstractmethod
-    def _derived_sched(self) -> SchedulerOutputs:
-        raise NotImplementedError("_derived_sched")
 
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
-        return self._derived_sched()
-
         """Schedule queued requests.
 
         Chunked prefill allows to chunk prefill requests, batch them together
@@ -682,6 +664,7 @@ class Scheduler(ABC):
         # self._update_queue_size(len(self.waiting) + len(self.running))
 
         timedout = []
+        finished = []
 
         for seq_group in self.running:
             if seq_group.is_finished():
@@ -692,18 +675,21 @@ class Scheduler(ABC):
                     assert self.output_proc_callback is not None
                     self.output_proc_callback(request_id=seq_group.request_id)
                 self._free_finished_seq_group(seq_group)
-                self.running.remove(seq_group)
+                finished.append(seq_group)
             else:
                 self._update_running_priority(seq_group)
 
                 # Check timeout
-                if seq_group.cur_vtime >= timeslice:
+                if seq_group.cur_vtime >= seq_group.timeslice:
                     seq_group.is_timedout = True
                     timedout.append(seq_group)
                     # waiting.append(seq_group)
-                    self.running.remove(seq_group)
+                    finished.append(seq_group)
                 else:
                     max_num_seqs_budget -= 1
+        
+        for seq_group in finished:
+            self.running.remove(seq_group)
 
         for seq_group in self.waiting:
             self._update_waiting_priority(seq_group)
@@ -730,12 +716,15 @@ class Scheduler(ABC):
                     assert self.output_proc_callback is not None
                     self.output_proc_callback(request_id=new_seq.request_id)
                 self._free_finished_seq_group(new_seq)
-                self.waiting.remove(new_seq)
                 continue
-
+            
+            #print(new_seq)
+            #print(f"is_new_seq: {new_seq.is_new_seq}")
             if new_seq.is_new_seq:
+                #print('---------new seq')
                 self.new_seqs.remove(new_seq)
-                is_new_seq = False
+                new_seq.is_new_seq = False
+            # 0/0
 
             # if new_seq.state == TIMEDOUT:
             #     rescheduled.append(new_seq)
@@ -761,10 +750,17 @@ class Scheduler(ABC):
         self.running = deque(
             sorted(self.running, key=lambda s: self.priority(s), reverse=True)
         )
+        
+        self.new_seqs = deque(
+            sorted(self.new_seqs, key=lambda s: self.priority(s))
+        )
 
         preempted_seqs = []
 
-        while self.new_seqs:
+        # If there are no running seqs, but N seqs arrive, with 
+        # N > max_num_seqs, running will be empty and new_seqs will still
+        # have seqs.
+        while self.new_seqs and self.running:
             # Get seq with lowest priority
             seq_group = self.running[0]
 
@@ -780,11 +776,13 @@ class Scheduler(ABC):
                     )
                     print(
                         f"[CFS][preempt] inserting "
-                        f"{waiting_seq_head.request_id}"
-                        f"[{self.print_seq(waiting_seq_head)}]"
+                        f"{new_seqs_head.request_id}"
+                        f"[{self.print_seq(new_seqs_head)}]"
                     )
                 new_sched_seqs.append(new_seqs_head)
                 self.new_seqs.remove(new_seqs_head)
+                self.waiting.remove(new_seqs_head)
+                new_seqs_head.is_new_seq = False
 
                 # # Sanity check. If seq_group was NEW, then new_seqs_head
                 # # should have been scheduled instead in 2. If seq_group is
@@ -851,7 +849,11 @@ class Scheduler(ABC):
         # Add a backfill policy??
 
         # Remove seqs from running if there is no budget
-        for seq_group in self.running:
+        i = 0
+        while cur_blocks_budget >= 0 and i < len(self.running):
+        #for seq_group in self.running:
+            seq_group = self.running[i]
+            i += 1
             # Check if preemption due to OOM is still reguired
             if cur_blocks_budget >= 0:
                 break
@@ -880,6 +882,7 @@ class Scheduler(ABC):
 
             # Remove seq and update budget
             self.running.remove(seq_group)
+            i -= 1
             cur_blocks_budget += get_num_required_blocks(seq_group)
 
         # If there still is a budget deficit, remove seqs regardless
@@ -931,7 +934,8 @@ class Scheduler(ABC):
         self.waiting.extend(preempted_seqs)
 
         # Add the remaining new_seqs with low priority
-        self.waiting.extend(self.new_seqs)
+        # already there...
+        #self.waiting.extend(self.new_seqs)
 
         # self.waiting = deque(
         #     sorted(self.waiting, key=lambda s: self.priority(s))

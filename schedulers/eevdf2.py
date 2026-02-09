@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import enum
 
 # import os
 # import random
@@ -9,14 +8,12 @@ import enum
 # from collections import deque
 # from dataclasses import dataclass, field
 from typing import Callable, Optional
-from random import seed, randint, uniform
 import joblib
-import numpy as np
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
-from vllm.sequence import SequenceGroup
+from vllm.sequence import SequenceGroup, SequenceStatus
 
-from prioritySchedBase import Scheduler
+from schedBase2 import Scheduler
 
 
 class EEVDF(Scheduler):
@@ -86,25 +83,18 @@ class EEVDF(Scheduler):
 
         setattr(SequenceGroup, "total_vtime", 0)
         setattr(SequenceGroup, "cur_vtime", 0)
-        setattr(
-            SequenceGroup, "expected_time_slice", self._base_expected_time_slice
-        )
+        setattr(SequenceGroup, "timeslice", self._base_expected_time_slice)
         setattr(SequenceGroup, "priority", 1)
         setattr(SequenceGroup, "lag", 0)
         setattr(SequenceGroup, "vdeadline", 0)
 
-        setattr(SequenceGroup, "slice_increment", 10)
+        # setattr(SequenceGroup, "slice_increment", 10)
 
         # Number of tokens (or time spent) per sched step by each seq
         # If using multi-step scheduling, it would be more than 1
         # per max_num_seqs.
         self.sched_slice = 1
         self.max_num_seqs = self.scheduler_config.max_num_seqs
-
-    def add_seq_group(self, seq_group: SequenceGroup) -> None:
-        """Overwritten from base class."""
-        # Add sequence groups to the waiting queue.
-        self.new_seqs.append(seq_group)
 
     def _total_queue_size(self):
         return len(self.running) + len(self.waiting)
@@ -129,7 +119,7 @@ class EEVDF(Scheduler):
         if seq_group.lag < 0:
             seq_group.vdeadline = float("inf")
         else:
-            seq_group.vdeadline = seq_group.lag + seq_group.expected_time_slice
+            seq_group.vdeadline = seq_group.lag + seq_group.timeslice
 
     def _can_preempt(self, seq_group):
         if seq_group.first_seq.status != SequenceStatus.RUNNING:
@@ -167,5 +157,5 @@ class EEVDF(Scheduler):
     def print_seq(self, seq_group):
         return (
             f"lag={seq_group.lag:.2f} - vdeadline={seq_group.vdeadline:.2f} "
-            f"- {seq_group.cur_vtime}/{seq_group.total_vtime}/{seq_group.expected_time_slice}"
+            f"- {seq_group.cur_vtime}/{seq_group.total_vtime}/{seq_group.timeslice}"
         )
