@@ -1,8 +1,4 @@
 # mine....
-env/*
-!env/.gitkeep
-datasets/*
-!datasets/.gitkeep
 vllm
 *.npy
 *.txt
