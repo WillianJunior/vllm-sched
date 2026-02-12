@@ -1,4 +1,3 @@
-
 #/bin/bash
 
 if [ "$#" -lt 1 ]; then
@@ -31,7 +30,7 @@ NUM_PROMPTS=( 20 )
 REQUEST_RATE=( 1 ) # need ot find out
 REP=( $(seq 1) ) # todo: can later replicate
 
-MNS=16
+MNS=32
 MAX_MODEL_LEN=10000
 N_GPUS=1
 QUANTZ=""

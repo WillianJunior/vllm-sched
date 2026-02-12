@@ -1,7 +1,9 @@
 #!/bin/bash
 
+module load cuda/12.3.2 anaconda3.2023.09-0
+
 # all succede or fail
-set -e
+set -e -x
 
 export BASE_PATH=$(git rev-parse --show-toplevel)/envs
 export VLLM_ENV_NAME=vllm-0.10.1
