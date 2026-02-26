@@ -26,20 +26,49 @@ DATASET_PATH=$GIT_ROOT_PATH/datasets
 #cd /sonic_home/willianjunior/vllm-segment/git/vllm/benchmarks
 
 MODEL=$1
-GOODPUT=$2
-MAX_CONCUR="" # default: None
+GOODPUT=$2 # not used... use RBG
+MAX_CONCUR=$3 # default: None
 NUM_PROMPTS=$4
-REQUEST_RATE=$5
+RBG=$5  # req_rate@burst@goodput_difficulty
 SCHEDULER=$6
 
-RESULT_FILENAME=res-$(basename $MODEL)-goodput${GOODPUT}-req_rate${REQUEST_RATE}-${SCHEDULER}.json
+REQUEST_RATE="${RBG%%@*}"
+BURSTNESS="${RBG#*@}"
+BURSTNESS="${BURSTNESS%%@*}"
+GOODPUT="${RBG##*@}"
+
+# base throughput in tokens/sec/req
+#BASE_THROUGHPUT=75 # 2380 tokens/s, MNS=32 1/900 input/output tokens 320 reqs rtx3090
+#TPOT_GOODPUT=$(printf "%.2f\n" $(echo "scale=2; 1000*$GOODPUT_DIFFICULTY/$BASE_THROUGHPUT" | bc))
+E2EL_GOODPUT=$GOODPUT
+
+RESULT_FILENAME=res-$(basename $MODEL)-tpot_goodput${TPOT_GOODPUT}-req_rate${REQUEST_RATE}-burst${BURTSTNESS}-${SCHEDULER}.json
+
+
+#python3 $BENCHMARK_PATH/benchmark_serving.py \
+#	--base-url http://localhost:8000 --backend openai \
+#	--endpoint /v1/completions	\
+#	--model $MODEL \
+#	--ignore-eos --dataset-name random \
+#	--num-prompts $NUM_PROMPTS \
+#	--random-input-len 1 --random-output-len 900 \
+#	--percentile-metrics ttft,tpot,itl,e2el \
+#	--request-rate $REQUEST_RATE --burstiness $BURSTNESS \
+#	--goodput e2el:$E2EL_GOODPUT \
+#	--max-concurrency $MAX_CONCUR
+	#--goodput tpot:$TPOT_GOODPUT
+
 
 python3 $BENCHMARK_PATH/benchmark_serving.py \
 	--base-url http://localhost:8000 \
 	--backend vllm --model $MODEL \
-	--num-prompts $NUM_PROMPTS --goodput e2el:$GOODPUT --result-filename $RESULT_FILENAME \
+	--num-prompts $NUM_PROMPTS \
+	--goodput e2el:$E2EL_GOODPUT --result-filename $RESULT_FILENAME \
 	--save-result --result-dir ./results --dataset-name sharegpt \
 	--dataset-path $GIT_ROOT_PATH/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
-	--percentile-metrics ttft,tpot,itl,e2el --request-rate $REQUEST_RATE
-	#--max-concurrency $MAX_CONCUR \
+	--percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
+	--request-rate $REQUEST_RATE --burstiness $BURSTNESS \
+	--max-concurrency $MAX_CONCUR
+
+
 

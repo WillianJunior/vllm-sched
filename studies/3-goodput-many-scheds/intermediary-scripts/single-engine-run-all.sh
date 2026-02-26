@@ -6,6 +6,7 @@ if [ "$#" -lt 1 ]; then
 fi
 
 #module load cuda/12.3.2 python/3.12.1 uv/0.8.9
+module load cuda/12.3.2 anaconda3.2023.09-0
 
 set -e
 
@@ -13,7 +14,7 @@ GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
 
 #source /sonic_home/willianjunior/vllm-segment/envs/vllm-prebuilt/bin/activate
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+#source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate $GIT_ROOT_PATH/envs/vllm-0.10.1
 
 set -x
@@ -23,23 +24,27 @@ SCHEDULER=$2
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PARAMS=( GOODPUT MAX_CONCUR NUM_PROMPTS REQUEST_RATE REP )
-GOODPUT=( 100 ) # need to find out
-MAX_CONCUR=( "None" ) # can leave to request_rate
-NUM_PROMPTS=( 20 )
-REQUEST_RATE=( 1 ) # need ot find out
-REP=( $(seq 1) ) # todo: can later replicate
-
 MNS=32
 MAX_MODEL_LEN=10000
 N_GPUS=1
+
+PARAMS=( GOODPUT MAX_CONCUR NUM_PROMPTS REQUEST_RATE REP )
+GOODPUT=( 100 ) # need to find out
+MAX_CONCUR=( "None" ) # can leave to request_rate
+NUM_PROMPTS=( $((4*$MNS)) )
+
+# req_rate@burst@goodput
+# values from run on gorgona5: p50, p75, p90, p99
+REQUEST_RATE=( "3@0.01@2610" "3@0.01@5481" "3@0.01@7714" "3@0.01@12171" )
+REP=( $(seq 1) ) # todo: can later replicate
+
 QUANTZ=""
 if [ -n "$SCHEDULER" ]; then
     SCHEDULER="--scheduler $SCHEDULER"
 fi
 
 # Start engine server
-vllm serve $MODEL --gpu-memory-utilization 0.9 --max-model-len $MAX_MODEL_LEN --max-num-seqs $MNS --tensor-parallel-size $N_GPUS $QUANTZ $SCHEDULER & SERVER_PID=$!
+vllm serve $MODEL --host localhost --port 8000 --gpu-memory-utilization 0.9 --max-model-len $MAX_MODEL_LEN --max-num-seqs $MNS --tensor-parallel-size $N_GPUS $QUANTZ $SCHEDULER & SERVER_PID=$!
 
 # Wait for server start
 python3 $GIT_ROOT_PATH/util/wait_vllm.py
@@ -77,7 +82,7 @@ for ((i=0; i<TOTAL_TESTS; i++)); do
 	set -x
 
 	echo Testing $MODEL $SCHEDULER goodput=$GOODPUT_VAL max_concurrency=$MAX_CONCUR_VAL num_prompts=$NUM_PROMPTS_VAL request_rate=$REQUEST_RATE_VAL rep=$REP_VAL
-	bash $LOCAL_DIR/run-single-bench.sh $MODEL $GOODPUT_VAL $MAX_CONCUR_VAL $NUM_PROMPTS_VAL $REQUEST_RATE_VAL $SCHEDULER
+	bash $LOCAL_DIR/run-single-bench.sh $MODEL $GOODPUT_VAL $(( $MAX_CONCUR_VAL * 1000 )) $NUM_PROMPTS_VAL $REQUEST_RATE_VAL $SCHEDULER
 
 done
 
