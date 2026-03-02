@@ -40,11 +40,11 @@ REP=( $(seq 1) ) # todo: can later replicate
 
 QUANTZ=""
 if [ -n "$SCHEDULER" ]; then
-    SCHEDULER="--scheduler $SCHEDULER"
+    SCHEDULER="--scheduler-cls $SCHEDULER"
 fi
 
 # Start engine server
-vllm serve $MODEL --host localhost --port 8000 --gpu-memory-utilization 0.9 --max-model-len $MAX_MODEL_LEN --max-num-seqs $MNS --tensor-parallel-size $N_GPUS $QUANTZ $SCHEDULER & SERVER_PID=$!
+export VLLM_USE_V1=0; vllm serve $MODEL --host localhost --port 8000 --gpu-memory-utilization 0.9 --max-model-len $MAX_MODEL_LEN --max-num-seqs $MNS --tensor-parallel-size $N_GPUS $QUANTZ $SCHEDULER & SERVER_PID=$!
 
 # Wait for server start
 python3 $GIT_ROOT_PATH/util/wait_vllm.py

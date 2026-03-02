@@ -2,6 +2,9 @@
 
 set -x
 
+# Make schedulers available for import
+export PYTHONPATH="/home/vip/willianjunior/git/vllm-sched/schedulers/:$PYTHONPATH"
+
 #MODELS_BASE_PATH=/scratch/willian/models
 MODELS_BASE_PATH=/snfs1/llm-models
 
