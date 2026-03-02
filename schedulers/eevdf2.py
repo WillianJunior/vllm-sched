@@ -62,7 +62,7 @@ class EEVDF(Scheduler):
 
         # Load estimator model
         self.estimator = joblib.load(
-            "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/llm-len-regression/models/random-forest-model-335.pkl.qrf"
+            "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/2-llm-len-regression/models/random-forest-model-335.pkl.qrf"
         )
 
         # Just a different random with extra steps

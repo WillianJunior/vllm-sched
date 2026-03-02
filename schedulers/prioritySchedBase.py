@@ -15,7 +15,7 @@ from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import BlockSpaceManager
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.prompt_adapter.request import PromptAdapterRequest
+#from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (
     Sequence,
     SequenceData,
@@ -134,13 +134,13 @@ class SchedulerOutputs:
             if g.seq_group.lora_request is not None
         }
 
-    @property
-    def prompt_adapter_requests(self) -> Set[PromptAdapterRequest]:
-        return {
-            g.seq_group.prompt_adapter_request
-            for g in self.scheduled_seq_groups
-            if g.seq_group.prompt_adapter_request is not None
-        }
+    #@property
+    #def prompt_adapter_requests(self) -> Set[PromptAdapterRequest]:
+    #    return {
+    #        g.seq_group.prompt_adapter_request
+    #        for g in self.scheduled_seq_groups
+    #        if g.seq_group.prompt_adapter_request is not None
+    #    }
 
 
 def seq_group_metadata_builder():

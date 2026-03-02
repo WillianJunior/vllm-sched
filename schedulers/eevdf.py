@@ -55,11 +55,11 @@ class EEVDF(Scheduler):
         seed(0)  # to make it reproducible
         self.oracle = dict()
         #with open("oracle_costs_sharegpt200.txt", "r") as file:
-        with open(f"oracle.txt", "r") as file:
+        with open(f"/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/3-goodput-many-scheds/oracle.txt", "r") as file:
             next(file) # skip first line of columns name
             for line in file:
                 parts = line.strip().split()
-                assert len(parts) == 3, "malformed lines"
+                assert len(parts) >= 3, "malformed lines"
                 key = int(parts[OracleFields.KEY.value])
                 value1 = int(parts[OracleFields.PROMPT.value])
                 value2 = int(parts[OracleFields.GENERATE.value])
