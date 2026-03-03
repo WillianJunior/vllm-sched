@@ -3,14 +3,15 @@
 set -x
 
 # Make schedulers available for import
-export PYTHONPATH="/home/vip/willianjunior/git/vllm-sched/schedulers/:$PYTHONPATH"
+GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
+export PYTHONPATH="$GIT_ROOT_PATH/schedulers/:$PYTHONPATH"
 
 #MODELS_BASE_PATH=/scratch/willian/models
 MODELS_BASE_PATH=/snfs1/llm-models
 
 #MODELS=( "llama/Llama-3.1-8B-Instruct" )
 MODELS=( "llama-3.2-3B-Instruct" )
-SCHEDULERS=(  )
+SCHEDULERS=( eevdf2.EEVDF )
 
 PARAMS=( MODELS SCHEDULERS )
 
@@ -40,6 +41,6 @@ for ((i=0; i<TOTAL_TESTS; i++)); do
         done
         set -x
 
-	bash intermediary-scripts/single-engine-run-all.sh $MODELS_BASE_PATH/$MODEL_VAL $SCHEDULER_VAL
+	bash intermediary-scripts/single-engine-run-all.sh $MODELS_BASE_PATH/$MODELS_VAL $SCHEDULERS_VAL
 done
 

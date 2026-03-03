@@ -15,7 +15,7 @@ GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
 #source /sonic_home/willianjunior/vllm-segment/envs/vllm-prebuilt/bin/activate
 
 #source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate $GIT_ROOT_PATH/envs/vllm-0.10.1
+conda activate $GIT_ROOT_PATH/envs/vllm-0.9.2
 
 set -x
 
@@ -31,11 +31,11 @@ N_GPUS=1
 PARAMS=( GOODPUT MAX_CONCUR NUM_PROMPTS REQUEST_RATE REP )
 GOODPUT=( 100 ) # need to find out
 MAX_CONCUR=( "None" ) # can leave to request_rate
-NUM_PROMPTS=( $((4*$MNS)) )
+NUM_PROMPTS=( $((10*$MNS)) )
 
 # req_rate@burst@goodput
 # values from run on gorgona5: p50, p75, p90, p99
-REQUEST_RATE=( "3@0.01@2610" "3@0.01@5481" "3@0.01@7714" "3@0.01@12171" )
+REQUEST_RATE=( "10@0.01@7743" "10@0.01@10442" "10@0.01@13595" "10@0.01@19411" )
 REP=( $(seq 1) ) # todo: can later replicate
 
 QUANTZ=""
@@ -44,7 +44,7 @@ if [ -n "$SCHEDULER" ]; then
 fi
 
 # Start engine server
-export VLLM_USE_V1=0; vllm serve $MODEL --host localhost --port 8000 --gpu-memory-utilization 0.9 --max-model-len $MAX_MODEL_LEN --max-num-seqs $MNS --tensor-parallel-size $N_GPUS $QUANTZ $SCHEDULER & SERVER_PID=$!
+export VLLM_USE_V1=0; vllm serve $MODEL --host localhost --port 8000 --gpu-memory-utilization 0.9 --enable-chunked-prefill --max-model-len $MAX_MODEL_LEN --max-num-seqs $MNS --tensor-parallel-size $N_GPUS $QUANTZ $SCHEDULER & SERVER_PID=$!
 
 # Wait for server start
 python3 $GIT_ROOT_PATH/util/wait_vllm.py

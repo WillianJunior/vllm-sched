@@ -60,10 +60,10 @@ class EEVDF(Scheduler):
             output_proc_callback,
         )
 
-        # Load estimator model
-        self.estimator = joblib.load(
-            "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/2-llm-len-regression/models/random-forest-model-335.pkl.qrf"
-        )
+        # Load estimator model (NOT USING, GETTING FROM PRE-PROCESSED FILE)
+        #self.estimator = joblib.load(
+        #    "/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/2-llm-len-regression/models/random-forest-model-335.pkl.qrf"
+        #)
 
         # Just a different random with extra steps
         # Also didn't work ...
@@ -125,6 +125,7 @@ class EEVDF(Scheduler):
         if seq_group.first_seq.status != SequenceStatus.RUNNING:
             return True
         else:
+            return False # forcing SJF, i.e., no preemption
             return seq_group.cur_vtime > seq_group.timeslice
 
     def _should_preempt(self, victim, sub):

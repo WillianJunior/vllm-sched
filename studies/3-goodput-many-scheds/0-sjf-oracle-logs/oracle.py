@@ -166,10 +166,7 @@ class SchedulerOutputs:
 
     def __post_init__(self):
         # Swap in and swap out should never happen at the same time.
-        # [Will]: in my case, which has no swap for OOM and swap for
-        # quantum, a seq can be quantumed out while another is loaded
-        # from waiting
-        #assert not (self.blocks_to_swap_in and self.blocks_to_swap_out)
+        assert not (self.blocks_to_swap_in and self.blocks_to_swap_out)
 
         self.num_loras: int = len(self.lora_requests)
         if self.num_loras > 0:
@@ -182,7 +179,7 @@ class SchedulerOutputs:
         return (
             not self.scheduled_seq_groups
             and not self.blocks_to_swap_in
-            #and not self.blocks_to_swap_out
+            and not self.blocks_to_swap_out
             and not self.blocks_to_copy
         )
 
@@ -508,10 +505,6 @@ class Scheduler:
         # Sequence groups in the SWAPPED state.
         # Contain decode requests that are swapped out.
         self.swapped: Deque[SequenceGroup] = deque()
-        # Monkey patching SequenceGroup to have a quantum value
-        setattr(SequenceGroup, "spent_quantum", 0)
-        # ... and to acknowledge whether it was swapped due to quantum ending
-        setattr(SequenceGroup, "was_quantumd_out", False)
         # Sequence groups finished requests ids since last step iteration.
         # It lets the model know that any state associated with these requests
         # can and must be released after the current step.
@@ -523,11 +516,8 @@ class Scheduler:
         self.prev_prompt = False
         # Latency of the last prompt step
         self.last_prompt_latency = 0.0
-
-        # [Will]: we are only doing recompute on OOM
         # preemption mode, RECOMPUTE or SWAP
-        # self.user_specified_preemption_mode = scheduler_config.preemption_mode
-        self.user_specified_preemption_mode = PreemptionMode.RECOMPUTE
+        self.user_specified_preemption_mode = scheduler_config.preemption_mode
 
         # The following field is test-only. It is used to inject artificial
         # preemption.
@@ -585,8 +575,8 @@ class Scheduler:
                 scheduler_config.max_num_batched_tokens // i
             )
 
-        # RR stuff
-        self.quantum = 20
+        self.seq2id_map = dict()
+        self.global_seq_id = 0
 
     @property
     def next_cache_id(self):
@@ -603,6 +593,8 @@ class Scheduler:
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
+        self.seq2id_map[seq_group.request_id] = self.global_seq_id
+        self.global_seq_id += 1
         self.waiting.append(seq_group)
 
     def _add_seq_group_to_running(self, seq_group: SequenceGroup) -> None:
@@ -637,11 +629,7 @@ class Scheduler:
             request_id = (request_id,)
         request_ids = set(request_id)
         seq_id_to_seq_group = seq_id_to_seq_group or {}
-        for state_queue in [
-            self.waiting,
-            self.running,
-            self.swapped,
-        ]:
+        for state_queue in [self.waiting, self.running, self.swapped]:
             aborted_groups: List[SequenceGroup] = []
             for seq_group in state_queue:
                 # When n>1, seq_group.request_id looks like
@@ -691,12 +679,6 @@ class Scheduler:
             or len(self.running) != 0
             or len(self.swapped) != 0
         )
-
-    def has_waiting_seqs(self) -> bool:
-        """If max_num_seqs seqs are running  and there are seqs waiting, or
-        if there are OOM swapped-out seqs waiting.
-        """
-        return (len(self.waiting) + len(self.swapped)) > 0
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_manager.get_prefix_cache_hit_rate(device)
@@ -765,8 +747,6 @@ class Scheduler:
             ScheduledSequenceGroup
         ] = ret.prefill_seq_groups
         preempted: List[SequenceGroup] = ret.preempted
-
-        # [Will]: only quantum seqs are swapped out
         swapped_out: List[SequenceGroup] = ret.swapped_out
 
         running_queue = self.running
@@ -808,34 +788,6 @@ class Scheduler:
                 > self.scheduler_config.max_model_len
             ):
                 self._async_stopped.append(seq_group)
-                continue
-
-            # Check for spent quantum. Only swaps if there are waiting sequences
-            # Otherwise this would just be thrashing
-            if (
-                self.has_waiting_seqs()
-                and seq_group.spent_quantum >= self.quantum
-            ):
-                print(f"========= [quantum] swap-out {seq_group} after {seq_group.spent_quantum} with waiting queue {len(self.waiting)}")
-                # With async postprocessor, before preempting a sequence
-                # we need to ensure it has no pending async postprocessor
-                do_preempt = True
-                if self.use_async_output_proc:
-                    assert self.output_proc_callback is not None
-                    self.output_proc_callback(request_id=seq_group.request_id)
-
-                    # It may be that the async pending "seq_group"
-                    # becomes finished, in which case we simply free it.
-                    if seq_group.is_finished():
-                        self._free_finished_seq_group(seq_group)
-                        do_preempt = False
-
-                # Do preemption if there are no async pending
-                if do_preempt:
-                    self._swap_out(seq_group, blocks_to_swap_out)
-                    seq_group.was_quantumd_out = True
-                    swapped_out.append(seq_group)
-
                 continue
 
             # NOTE(woosuk): Preemption happens only when there is no available
@@ -887,12 +839,10 @@ class Scheduler:
                     preempted_mode = self._preempt(
                         victim_seq_group, blocks_to_swap_out
                     )
-
-                    # [Will]: we are only doing recompute on OOM
-                    # if preempted_mode == PreemptionMode.RECOMPUTE:
-                    preempted.append(victim_seq_group)
-                    # else:
-                    # swapped_out.append(victim_seq_group)
+                    if preempted_mode == PreemptionMode.RECOMPUTE:
+                        preempted.append(victim_seq_group)
+                    else:
+                        swapped_out.append(victim_seq_group)
 
                 if not cont_loop:
                     break
@@ -912,9 +862,6 @@ class Scheduler:
                     scheduled_seq_group.token_chunk_size = 1
                     decode_seq_groups.append(scheduled_seq_group)
                     ret.decode_seq_groups_list.append(seq_group)
-
-                    # Only non-prefill sequences count for quantum spending
-                    seq_group.spent_quantum += 1
 
                 budget.add_num_batched_tokens(
                     seq_group.request_id, num_running_tokens
@@ -1175,15 +1122,14 @@ class Scheduler:
         self.running = running_queue
         return force_preemption_count
 
-    def _schedule_waiting(
+    def _schedule_prefills(
         self,
         budget: SchedulingBudget,
         curr_loras: Optional[Set[int]],
         enable_chunking: bool = False,
         partial_prefill_metadata: Optional[PartialPrefillMetadata] = None,
-    ) -> (SchedulerPrefillOutputs, SchedulerSwappedInOutputs):
-        """Schedule sequence groups that are in prefill stage
-        or were swapped-out due to quantum.
+    ) -> SchedulerPrefillOutputs:
+        """Schedule sequence groups that are in prefill stage.
 
         Note that the current scheduler treats PREEMPTED_FOR_RECOMPUTE
         as a new prefill (that starts from beginning -> most recently generated
@@ -1217,86 +1163,15 @@ class Scheduler:
                     is_prefill=True, enable_chunking=enable_chunking
                 ),
             )
-
         ignored_seq_groups: List[SequenceGroup] = []
         seq_groups: List[ScheduledSequenceGroup] = []
         using_prompt_embeds: bool = False
-
-        # Blocks that need to be swapped or copied before model execution.
-        blocks_to_swap_in: List[Tuple[int, int]] = []
-        blocks_to_copy: List[Tuple[int, int]] = []
-        decode_seq_groups: List[ScheduledSequenceGroup] = []
-        prefill_seq_groups: List[ScheduledSequenceGroup] = []
-        infeasible_seq_groups: List[SequenceGroup] = []
 
         waiting_queue = self.waiting
 
         leftover_waiting_sequences: Deque[SequenceGroup] = deque()
         while self._passed_delay(time.time()) and waiting_queue:
             seq_group = waiting_queue[0]
-
-            if seq_group.was_quantumd_out:
-                #print(f"========= [quantum] swap-in trying {seq_group}")
-
-                is_prefill = seq_group.is_prefill()
-                alloc_status = self.block_manager.can_swap_in(
-                    seq_group,
-                    self._get_num_lookahead_slots(is_prefill, enable_chunking),
-                )
-                assert (
-                    is_prefill != AllocStatus.LATER
-                ), "if happens, need to fix. check _schedule_swapped"
-                assert (
-                    alloc_status != AllocStatus.NEVER
-                ), "if happens, need to fix. check _schedule_swapped"
-                assert self.lora_enabled == False, "not supporting lora"
-
-                # The total number of sequences in the RUNNING state should not
-                # exceed the maximum number of sequences.
-                num_new_seqs = seq_group.get_max_num_running_seqs()
-                num_new_tokens_uncached, num_new_tokens_cached = (
-                    self._get_num_new_uncached_and_cached_tokens(
-                        seq_group, SequenceStatus.SWAPPED, enable_chunking,
-                        budget))
-
-                if num_new_tokens_uncached == 0 or not budget.can_schedule(
-                        num_new_tokens=num_new_tokens_uncached,
-                        num_new_seqs=num_new_seqs,
-                ):
-                    self.remove_seq_from_computed_blocks_tracker(
-                        seq_group, SequenceStatus.SWAPPED)
-                    # No more scheduling until there is space 
-                    # for the head of line. Fairness...
-                    break 
-
-
-                # We CAN swap the seq in
-                #print(f"========= [quantum] swap-in: can do... {seq_group}")
-                seq_group.was_quantumd_out = False
-                seq_group.spent_quantum = 1 # this is the first token scheduled
-                waiting_queue.popleft()
-
-                # Perform swap-in
-                self._swap_in(seq_group, blocks_to_swap_in)
-                self._append_slots(seq_group, blocks_to_copy, enable_chunking)
-
-                if is_prefill:
-                    prefill_seq_groups.append(
-                        ScheduledSequenceGroup(
-                            seq_group,
-                            token_chunk_size=num_new_tokens_uncached +
-                            num_new_tokens_cached,
-                        ))
-                else:
-                    decode_seq_groups.append(
-                        ScheduledSequenceGroup(seq_group, token_chunk_size=1))
-                budget.add_num_batched_tokens(
-                    seq_group.request_id,
-                    num_batched_tokens=num_new_tokens_uncached,
-                    num_cached_tokens=num_new_tokens_cached,
-                )
-                budget.add_num_seqs(seq_group.request_id, num_new_seqs)
-                continue
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
             assert len(waiting_seqs) == 1, (
@@ -1473,24 +1348,13 @@ class Scheduler:
         if len(seq_groups) > 0:
             self.prev_prompt = True
 
-        prefill_ret = SchedulerPrefillOutputs(
+        return SchedulerPrefillOutputs(
             seq_groups=seq_groups,
             ignored_seq_groups=ignored_seq_groups,
             num_lookahead_slots=self._get_num_lookahead_slots(
                 is_prefill=True, enable_chunking=enable_chunking
             ),
         )
-        swapped_in_ret = SchedulerSwappedInOutputs(
-            decode_seq_groups=decode_seq_groups,
-            prefill_seq_groups=prefill_seq_groups,
-            blocks_to_swap_in=blocks_to_swap_in,
-            blocks_to_copy=blocks_to_copy,
-            num_lookahead_slots=self._get_num_lookahead_slots(
-                is_prefill=False, enable_chunking=enable_chunking),
-            infeasible_seq_groups=infeasible_seq_groups,
-        )
-
-        return prefill_ret, swapped_in_ret
 
     def _schedule_default(self) -> SchedulerOutputs:
         """Schedule queued requests.
@@ -1527,7 +1391,7 @@ class Scheduler:
 
         # If any requests are swapped, prioritized swapped requests.
         if not self.swapped:
-            prefills = self._schedule_waiting(
+            prefills = self._schedule_prefills(
                 budget, curr_loras, enable_chunking=False
             )
 
@@ -1538,7 +1402,7 @@ class Scheduler:
             self._schedule_priority_preemption(budget)
 
         # Don't schedule decodes if prefills are scheduled.
-        # NOTE: If `_schedule_waiting` doesn't enable chunking, self.running
+        # NOTE: If `_schedule_prefills` doesn't enable chunking, self.running
         # only contains decode requests, not chunked prefills.
         if len(prefills.seq_groups) == 0:
             running_scheduled = self._schedule_running(
@@ -1654,9 +1518,6 @@ class Scheduler:
         inter token latency because decodes requests don't need to be blocked
         by prefill requests.
         """
-
-        #print("xxxxxxxxxxxxxxxxxxxxxxx sched start xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1681,21 +1542,16 @@ class Scheduler:
             partial_prefill_metadata=partial_prefill_metadata,
         )
 
-        # [Will]: since we are setting OOM preemption as RECOMPUTE
-        # there should never be any swapped_in seq. Preempted seqs
-        # should either be reinserted into the head of the waiting
-        # queue (OOM) or to the end (quantum).
-        #
-        # # Schedule swapped out requests.
-        # # If preemption happens, it means we don't have space for swap-in.
-        # should_oom_swap_in = (
-        #     len(running_scheduled.preempted)
-        #     + len(running_scheduled.swapped_out)
-        # ) == 0
-        # if should_oom_swap_in:
-        #     swapped_in = self._schedule_swapped(budget, curr_loras)
+        # Schedule swapped out requests.
+        # If preemption happens, it means we don't have space for swap-in.
+        if (
+            len(running_scheduled.preempted)
+            + len(running_scheduled.swapped_out)
+            == 0
+        ):
+            swapped_in = self._schedule_swapped(budget, curr_loras)
 
-        prefills, swapped_in = self._schedule_waiting(
+        prefills = self._schedule_prefills(
             budget,
             curr_loras,
             enable_chunking=True,
@@ -1735,18 +1591,8 @@ class Scheduler:
         )
         self.running.extend([s.seq_group for s in prefills.seq_groups])
 
-        # Split swapped seqs into OOM and quantumd_out
-        oom_swapped_out = []
-        quantum_swapped_out = []
-        cmp_f = lambda seq: seq.was_quantumd_out
-        [
-            (quantum_swapped_out if cmp_f(seq) else oom_swapped_out).append(seq)
-            for seq in running_scheduled.swapped_out
-        ]
-
-        # Update swapped requests. Quantumd seqs are sent to the waiting queue
-        self.swapped.extend(oom_swapped_out)
-        self.waiting.extend(quantum_swapped_out)
+        # Update swapped requests.
+        self.swapped.extend(running_scheduled.swapped_out)
         # Put prefills first due to Attention backend ordering assumption.
         scheduled_seq_groups = (
             prefills.seq_groups
@@ -1769,19 +1615,6 @@ class Scheduler:
             if (all_prefills and not self.scheduler_config.is_multi_step)
             else running_scheduled.num_lookahead_slots
         )
-        
-        #print(f"len(scheduled_seq_groups): {len(scheduled_seq_groups)}")
-        #print(f"num_prefill_groups: {num_prefill_groups}")
-        #print(f"ignored_seq_groups: {len(prefills.ignored_seq_groups+swapped_in.infeasible_seq_groups)}")
-        #print(f"preempted: {len(running_scheduled.preempted) + len(running_scheduled.swapped_out)}")
-        #print(f"prefills.seq_groups: {len(prefills.seq_groups)}")
-        #print(f"running_scheduled.prefill_seq_groups: {len(running_scheduled.prefill_seq_groups)}")
-        #print(f"swapped_in.prefill_seq_groups: {len(swapped_in.prefill_seq_groups)}")
-        #print(f"running_scheduled.decode_seq_groups: {len(running_scheduled.decode_seq_groups)}")
-        #print(f"swapped_in.decode_seq_groups: {len(swapped_in.decode_seq_groups)}")
-
-        #print("xxxxxxxxxxxxxxxxxxxxxxx sched end xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-
         return SchedulerOutputs(
             scheduled_seq_groups=scheduled_seq_groups,
             num_prefill_groups=num_prefill_groups,
@@ -2039,8 +1872,15 @@ class Scheduler:
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)
 
-    def free_seq(self, seq: Sequence) -> None:
+    def free_seq(self, seq: Sequence, req_id = None) -> None:
         """Free a sequence from a block table."""
+        seq_group_id = "?"
+        if req_id:
+            seq_group_id = self.seq2id_map[req_id]
+            in_tokens = seq.inputs['prompt_token_ids']
+            req_ID = "".join(map(str, in_tokens[3:in_tokens.index(60)]))
+            print(f"Finished {req_id} REQ_TOKEN: {req_ID} prompt_len: {seq.get_prompt_len()} output_len: {seq.get_output_len()} total: {seq.get_len()}")
+            #print(f"Finished {req_id} REQ_TOKEN: {seq.inputs['prompt_token_ids'][3]} prompt_len: {seq.get_prompt_len()} output_len: {seq.get_output_len()} total: {seq.get_len()}")
         self.block_manager.free(seq)
 
     def remove_seq_from_computed_blocks_tracker(
@@ -2061,7 +1901,7 @@ class Scheduler:
         """Free finished seqs in a sequence group."""
         for seq in seq_group.get_seqs():
             if seq.is_finished():
-                self.free_seq(seq)
+                self.free_seq(seq, seq_group.request_id)
 
     def _free_finished_seq_group(self, seq_group: SequenceGroup) -> None:
         if seq_group.is_finished():
@@ -2217,9 +2057,6 @@ class Scheduler:
     ) -> None:
         mapping = self.block_manager.swap_in(seq_group)
         blocks_to_swap_in.extend(mapping)
-        num_blocks = 0;
-        for seq in seq_group.get_seqs(status=SequenceStatus.SWAPPED):
-            num_blocks += len(self.block_manager.block_tables[seq.seq_id].blocks)
         for seq in seq_group.get_seqs(status=SequenceStatus.SWAPPED):
             seq.status = SequenceStatus.RUNNING
 
