@@ -17,7 +17,7 @@ from vllm.v1.core.sched.request_queue import create_request_queue
 from vllm.v1.engine import EngineCoreEventType
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
-from vllm.v1.core.sched import Scheduler
+from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
@@ -183,6 +183,7 @@ class BaseScheduler(Scheduler):
                 assert num_new_tokens > 0
 
                 num_encoder_tokens = 0
+                effective_lookahead_tokens = 0
 
                 new_blocks = self.kv_cache_manager.allocate_slots(
                     request,
@@ -234,6 +235,10 @@ class BaseScheduler(Scheduler):
                     scheduled_resumed_reqs.append(request)
                 else:
                     raise RuntimeError(f"Invalid request status: {request.status}")
+                
+                req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(
+                    request_id
+                )
 
                 num_scheduled_tokens[request_id] = num_new_tokens
                 token_budget -= num_new_tokens
