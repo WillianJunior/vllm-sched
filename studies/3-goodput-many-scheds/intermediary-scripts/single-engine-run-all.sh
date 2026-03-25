@@ -35,7 +35,7 @@ NUM_PROMPTS=( $((10*$MNS)) )
 
 # req_rate@burst@goodput
 # values from run on gorgona5: p50, p75, p90, p99
-REQUEST_RATE=( "10@0.01@7743" "10@0.01@10442" "10@0.01@13595" "10@0.01@19411" )
+REQUEST_RATE=( "10@0.01@2971" "10@0.01@5736" "10@0.01@8493" "10@0.01@13741" )
 REP=( $(seq 1) ) # todo: can later replicate
 
 QUANTZ=""

@@ -55,7 +55,8 @@ class EEVDF(Scheduler):
         seed(0)  # to make it reproducible
         self.oracle = dict()
         #with open("oracle_costs_sharegpt200.txt", "r") as file:
-        with open(f"/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/3-goodput-many-scheds/oracle.txt", "r") as file:
+        #with open(f"/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/3-goodput-many-scheds/oracle.txt", "r") as file:
+        with open(f"0-sjf-oracle-logs/oracle.log", "r") as file:
             next(file) # skip first line of columns name
             for line in file:
                 parts = line.strip().split()

@@ -412,7 +412,7 @@ class Scheduler(ABC):
         self.new_seqs = []
 
         # Oracle stuff to test if predicting the len would result in SRTF
-        self.round_robin = False
+        self.round_robin = True
         self.rr_quantum = 100
         self.using_oracle = True
         noise = 2
@@ -420,7 +420,9 @@ class Scheduler(ABC):
         min_expected_time = 1
         seed(0)  # to make it reproducible
         self.oracle = dict()
-        with open("oracle_costs_sharegpt200.txt", "r") as file:
+        with open("0-sjf-oracle-logs/oracle.log", "r") as file:
+            next(file) # skip first line of columns name
+
             for line in file:
                 parts = line.strip().split()
                 assert len(parts) == 3, "malformed lines"

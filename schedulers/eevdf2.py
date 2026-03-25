@@ -125,7 +125,7 @@ class EEVDF(Scheduler):
         if seq_group.first_seq.status != SequenceStatus.RUNNING:
             return True
         else:
-            return False # forcing SJF, i.e., no preemption
+            #return False # forcing SJF, i.e., no preemption
             return seq_group.cur_vtime > seq_group.timeslice
 
     def _should_preempt(self, victim, sub):

@@ -100,7 +100,7 @@ class SchedulerOutputs:
         if self.num_loras > 0:
             self._sort_by_lora_ids()
 
-        self.num_prompt_adapters: int = len(self.prompt_adapter_requests)
+        #self.num_prompt_adapters: int = len(self.prompt_adapter_requests)
 
     def is_empty(self) -> bool:
         # NOTE: We do not consider the ignored sequence groups.
@@ -415,7 +415,9 @@ class Scheduler(ABC):
         min_expected_time = 1
         seed(0)  # to make it reproducible
         self.oracle = dict()
-        with open("oracle_costs_sharegpt200.txt", "r") as file:
+        #with open("oracle_costs_sharegpt200.txt", "r") as file:
+        with open("0-sjf-oracle-logs/oracle.log", "r") as file:
+            next(file) # skip first line of columns name
             for line in file:
                 parts = line.strip().split()
                 assert len(parts) == 3, "malformed lines"
