@@ -4,8 +4,6 @@ import time
 # from dataclasses import replace
 # from typing import Any
 
-from functools import cmp_to_key
-
 # import numpy as np
 
 from vllm.config import VllmConfig
@@ -48,9 +46,6 @@ class Scheduler(Scheduler):
         # In number of generated decode tokens
         self.quantum = 60
 
-        setattr(Request, "cur_time", 0)
-
-
     def schedule(self) -> SchedulerOutput:
         # NOTE(will) just basic decoder-only scheduling
         # no spec decoding
@@ -69,9 +64,7 @@ class Scheduler(Scheduler):
         scheduled_new_reqs: list[Request] = []
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
-        preempted_reqs: list[Request] = []     # preempted and recompute
-        swapped_out_reqs: list[Request] = []   # preempted and swapped kv to ram
-        stopped_reqs: list[Request] = []       # preempted, but still in vram
+        preempted_reqs: list[Request] = []
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
@@ -85,22 +78,10 @@ class Scheduler(Scheduler):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
-        all_submitted_reqs = len(self.running) + len(self.waiting)
-
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
-            request = self.running[req_index]
-
-            # Check for quantum preemption
-            # This just stops the execution of the request, i.e., will 
-            # not generate tokens this turn.
-            # Request remains in gpu memory
-            if all_submitted_reqs >= self.max_num_running_reqs and request.cur_time >= self.quantum:
-                stopped_req = self.running.pop()
-                stopped_reqs.append(stopped_req)
-                req_index += 1
-                continue
+            request = self.running[req_index]            
 
             num_new_tokens = 1
             num_new_tokens = min(num_new_tokens, token_budget)
@@ -118,27 +99,9 @@ class Scheduler(Scheduler):
                         # The request can be scheduled.
                         break
 
-                    # Not implementing this yet...
-                    # However, ideas:
-                    # 1. Simple, preempt last on waiting queue. All
-                    #    reqs are running at the same time, regardless of
-                    #    memory pressure. Preempted to RAM.
-                    # 2. FCFS + RR. RR eligible reqs. Reqs are scheduled
-                    #    FCFS, and are kept in memory. On OOM: swap-out
-                    #    the youngest req and block new reqs until the end
-                    #    of another req. In this case, reinstante the 
-                    #    preempted req, loading the req state from RAM.
-                    raise Exception("Not implementing a OOM preemption policy...")
-
-                    # Try preempt stopped reqs before preempting running ones
-                    # for block space.
-                    if stopped_reqs:
-                        preempted_req = stopped_reqs.pop()
-                    else:
-                        preempted_req = self.running.pop()
+                    preempted_req = self.running.pop()
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
-                    preempted_req.cur_time = 0
                     preempted_reqs.append(preempted_req)
                     if preempted_req == request:
                         # No more request to preempt. Cannot schedule this request.
@@ -155,16 +118,13 @@ class Scheduler(Scheduler):
             num_scheduled_tokens[request_id] = num_new_tokens
             token_budget -= num_new_tokens
             req_index += 1
-            request.cur_time += 1
 
         # Use a temporary RequestQueue to collect requests that need to be
         # skipped and put back at the head of the waiting queue later
         skipped_waiting_requests = create_request_queue(self.policy)
 
-        # Try to fill the token budget if there is memory available
-        # i.e., no preemptions
+        # Next, schedule the WAITING requests.
         if not preempted_reqs:
-            # Next, schedule the WAITING requests.
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
@@ -172,82 +132,80 @@ class Scheduler(Scheduler):
                 request = self.waiting.peek_request()
                 request_id = request.request_id
 
-                # Check if request was stopped (i.e., still in memory)
-                if request.cur_time > 0:
-                    # Tokens already in memory, just a stopped request
-                    num_new_tokens = 1
+                # NOTE(Will): what is streaming???
+                # # Streaming: skip request if still waiting for next streaming req.
+                # if request.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
+                #     assert not request.streaming_queue
+                #     self.waiting.pop_request()
+                #     skipped_waiting_requests.prepend_request(request)
+                #     continue
 
-                    num_new_tokens = min(num_new_tokens, token_budget)
-                    assert num_new_tokens > 0
+                num_external_computed_tokens = 0
+                load_kv_async = False
+                # connector_prefix_cache_queries, connector_prefix_cache_hits = 0, 0
 
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request,
-                        num_new_tokens,
-                        num_lookahead_tokens=self.num_lookahead_tokens,
+                # Get already-cached tokens.
+                if request.num_computed_tokens == 0:
+                    # Get locally-cached tokens.
+                    new_computed_blocks, num_new_local_computed_tokens = (
+                        self.kv_cache_manager.get_computed_blocks(request)
                     )
 
+                    # Total computed tokens (local + external).
+                    num_computed_tokens = num_new_local_computed_tokens
                 else:
-                    # Get already-cached tokens.
-                    if request.num_computed_tokens == 0:
-                        # Get locally-cached tokens.
-                        new_computed_blocks, num_new_local_computed_tokens = (
-                            self.kv_cache_manager.get_computed_blocks(request)
-                        )
+                    # KVTransfer: WAITING reqs have num_computed_tokens > 0
+                    # after async KV recvs are completed.
+                    new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
+                    num_new_local_computed_tokens = 0
+                    num_computed_tokens = request.num_computed_tokens
 
-                        # Total computed tokens (local + external).
-                        num_computed_tokens = num_new_local_computed_tokens
-                    else:
-                        # KVTransfer: WAITING reqs have num_computed_tokens > 0
-                        # after async KV recvs are completed.
-                        new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
-                        num_new_local_computed_tokens = 0
-                        num_computed_tokens = request.num_computed_tokens
+                encoder_inputs_to_schedule = None
+                external_load_encoder_input = []
+                new_encoder_compute_budget = encoder_compute_budget
 
-                    # Number of tokens to be scheduled.
-                    # We use `request.num_tokens` instead of
-                    # `request.num_prompt_tokens` to consider the resumed
-                    # requests, which have output tokens.
-                    num_new_tokens = request.num_tokens - num_computed_tokens
+                # Number of tokens to be scheduled.
+                # We use `request.num_tokens` instead of
+                # `request.num_prompt_tokens` to consider the resumed
+                # requests, which have output tokens.
+                num_new_tokens = request.num_tokens - num_computed_tokens
 
-                    num_new_tokens = min(num_new_tokens, token_budget)
-                    assert num_new_tokens > 0
+                num_new_tokens = min(num_new_tokens, token_budget)
+                assert num_new_tokens > 0
 
-                    num_encoder_tokens = 0
-                    effective_lookahead_tokens = 0
-                    num_external_computed_tokens = 0
-                    load_kv_async = False
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request,
-                        num_new_tokens,
-                        num_new_computed_tokens=num_new_local_computed_tokens,
-                        new_computed_blocks=new_computed_blocks,
-                        num_lookahead_tokens=effective_lookahead_tokens,
-                        num_external_computed_tokens=num_external_computed_tokens,
-                        delay_cache_blocks=load_kv_async,
-                        num_encoder_tokens=num_encoder_tokens,
-                    )
+                num_encoder_tokens = 0
+                effective_lookahead_tokens = 0
+
+                new_blocks = self.kv_cache_manager.allocate_slots(
+                    request,
+                    num_new_tokens,
+                    num_new_computed_tokens=num_new_local_computed_tokens,
+                    new_computed_blocks=new_computed_blocks,
+                    num_lookahead_tokens=effective_lookahead_tokens,
+                    num_external_computed_tokens=num_external_computed_tokens,
+                    delay_cache_blocks=load_kv_async,
+                    num_encoder_tokens=num_encoder_tokens,
+                )
 
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     break
 
+                # Request was already popped from self.waiting
+                # unless it was re-added above due to new_blocks being None.
                 request = self.waiting.pop_request()
-                self.running.append(request)
 
+                self.running.append(request)
                 if self.log_stats:
                     request.record_event(
                         EngineCoreEventType.SCHEDULED, scheduled_timestamp
                     )
-                if request.cur_time > 0:
-                    scheduled_running_reqs.append(request)
-                elif request.status == RequestStatus.WAITING:
+                if request.status == RequestStatus.WAITING:
                     scheduled_new_reqs.append(request)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
                 else:
                     raise RuntimeError(f"Invalid request status: {request.status}")
-                
-                request.cur_time += 1
                 
                 req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(
                     request_id
@@ -261,58 +219,9 @@ class Scheduler(Scheduler):
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
 
-            # Sort by request.cur_time: 
-            # i.e., requests with longer cur_time should remain stopped
-            # compared to stopped reqs which are more recent.
-            def smaller_runtime_comparator(lhs, rhs):
-                return lhs.cur_time - rhs.cur_time
-            stopped_reqs.sort(key=cmp_to_key(smaller_runtime_comparator))
-
-            # Try to fill any remaining budget with requests that could 
-            # should be stopped, but there is still some budget.
-            # stopped_reqs is sorted by cur_time, ascending
-            while stopped_reqs and token_budget > 0:
-                if len(self.running) == self.max_num_running_reqs:
-                    break
-
-                request = stopped_reqs.peek_request()
-                num_new_tokens = 1
-                num_new_tokens = min(num_new_tokens, token_budget)
-
-                new_blocks = self.kv_cache_manager.allocate_slots(
-                    request,
-                    num_new_tokens,
-                    num_lookahead_tokens=self.num_lookahead_tokens,
-                )
-
-                if new_blocks is None:
-                    # The request cannot be scheduled.
-                    # Will not preempt other reqs to schedule this
-                    # stopped req.
-                    break
-
-                # Get the request from the stopped queue and return
-                # it to the running queue
-                request = stopped_reqs.pop()
-                self.running.append(request)
-
-                # Schedule the request.
-                scheduled_running_reqs.append(request)
-                request_id = request.request_id
-                req_to_new_blocks[request_id] = new_blocks
-                num_scheduled_tokens[request_id] = num_new_tokens
-                token_budget -= num_new_tokens
-                request.cur_time += 1
-
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
-
-        # Put stopped requests in the waiting queue
-        if stopped_reqs:
-            # Stopped requests must go to the end of the waiting queue.
-            self.waiting.append_requests(stopped_reqs)
-            # self.waiting.prepend_requests(stopped_reqs)
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())

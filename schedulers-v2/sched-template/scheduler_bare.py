@@ -7,8 +7,6 @@ import time
 # import numpy as np
 
 from vllm.config import VllmConfig
-# from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorMetadata
-# from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -200,26 +198,6 @@ class BaseScheduler(Scheduler):
                     # The request cannot be scheduled.
                     break
 
-                # # KVTransfer: the connector uses this info to determine
-                # # if a load is needed. Note that
-                # # This information is used to determine if a load is
-                # # needed for this request.
-                # if self.connector is not None:
-                #     self.connector.update_state_after_alloc(
-                #         request,
-                #         self.kv_cache_manager.get_blocks(request_id),
-                #         num_external_computed_tokens,
-                #     )
-                #     if (
-                #         self.connector_prefix_cache_stats is not None
-                #         and connector_prefix_cache_queries != 0
-                #     ):
-                #         self.connector_prefix_cache_stats.record(
-                #             num_tokens=connector_prefix_cache_queries,
-                #             num_hits=connector_prefix_cache_hits,
-                #             preempted=request.num_preemptions > 0,
-                #         )
-
                 # Request was already popped from self.waiting
                 # unless it was re-added above due to new_blocks being None.
                 request = self.waiting.pop_request()
@@ -324,23 +302,6 @@ class BaseScheduler(Scheduler):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
         )
-
-        # # NOTE(Kuntai): this function is designed for multiple purposes:
-        # # 1. Plan the KV cache store
-        # # 2. Wrap up all the KV cache load / save ops into an opaque object
-        # # 3. Clear the internal states of the connector
-        # if self.connector is not None:
-        #     meta: KVConnectorMetadata = self.connector.build_connector_meta(
-        #         scheduler_output
-        #     )
-        #     scheduler_output.kv_connector_metadata = meta
-
-        # # Build the connector meta for ECConnector
-        # if self.ec_connector is not None:
-        #     ec_meta: ECConnectorMetadata = self.ec_connector.build_connector_meta(
-        #         scheduler_output
-        #     )
-        #     scheduler_output.ec_connector_metadata = ec_meta
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
