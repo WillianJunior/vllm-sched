@@ -92,6 +92,7 @@ class Scheduler(Scheduler):
 
         # First, schedule the RUNNING requests.
         req_index = 0
+        print(f"[rr][steps] sched running")
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
 
@@ -137,8 +138,8 @@ class Scheduler(Scheduler):
                     # Try preempt stopped reqs before preempting running ones
                     # for block space.
                     if stopped_reqs:
-                        preempted_req = stopped_reqs.pop()
-                        if debug_rr: print(f"[rr] preempting stopped {preempted_req.request_id}")
+                        preempted_req = stopped_reqs.pop(0)
+                        if debug_rr: print(f"[rr] preempting stopped by running {preempted_req.request_id}")
                     else:
                         preempted_req = self.running.pop()
 
@@ -169,7 +170,16 @@ class Scheduler(Scheduler):
         # Try to fill the token budget if there is memory available
         # i.e., no preemptions
         if not preempted_reqs:
+            # Sort by request.cur_time: 
+            # i.e., requests with longer cur_time should remain stopped
+            # compared to stopped reqs which are more recent.
+            # Youngest reqs first.
+            def smaller_runtime_comparator(lhs, rhs):
+                return lhs.cur_time - rhs.cur_time
+            stopped_reqs.sort(key=cmp_to_key(smaller_runtime_comparator))
+
             # Next, schedule the WAITING requests.
+            print(f"[rr][steps] sched waiting")
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
@@ -196,6 +206,23 @@ class Scheduler(Scheduler):
                         num_new_tokens,
                         num_lookahead_tokens=self.num_lookahead_tokens,
                     )
+
+                    # Waiting requests can evict stopped requests
+                    # on OOM. 
+                    # Note: it is possible that the waiting req preempts
+                    # stopped reqs and still is not able to run.
+                    while not new_blocks and stopped_reqs:
+                        preempted_req = stopped_reqs.pop()
+                        if debug_rr: print(f"[rr] preempting stopped by waiting {preempted_req.request_id}")
+                        self._preempt_request(preempted_req, scheduled_timestamp)
+                        preempted_req.cur_time = 0
+                        preempted_reqs.append(preempted_req)
+
+                        new_blocks = self.kv_cache_manager.allocate_slots(
+                            request,
+                            num_new_tokens,
+                            num_lookahead_tokens=self.num_lookahead_tokens,
+                        ) 
 
                 else:
                     # Get already-cached tokens.
@@ -276,16 +303,10 @@ class Scheduler(Scheduler):
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
 
-            # Sort by request.cur_time: 
-            # i.e., requests with longer cur_time should remain stopped
-            # compared to stopped reqs which are more recent.
-            def smaller_runtime_comparator(lhs, rhs):
-                return lhs.cur_time - rhs.cur_time
-            stopped_reqs.sort(key=cmp_to_key(smaller_runtime_comparator))
-
             # Try to fill any remaining budget with requests that could 
             # should be stopped, but there is still some budget.
             # stopped_reqs is sorted by cur_time, ascending
+            print(f"[rr][steps] re-sched stopped")
             while stopped_reqs and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
@@ -321,6 +342,8 @@ class Scheduler(Scheduler):
                 token_budget -= num_new_tokens
                 request.cur_time += 1
 
+        print(f"[rr][steps] preping output")
+        
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
@@ -407,6 +430,8 @@ class Scheduler(Scheduler):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
         )
+
+        print(f"[rr][steps] _update_after_schedule")
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
