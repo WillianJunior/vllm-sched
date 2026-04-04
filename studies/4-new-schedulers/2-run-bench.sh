@@ -14,10 +14,10 @@ DATASET_PATH=$GIT_ROOT_PATH/datasets
 [ -f $DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json ] || wget -O "$DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json" https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
 
 MODEL=/snfs1/llm-models/llama-3.2-3B-Instruct/
-NUM_PROMPTS=128
+NUM_PROMPTS=6
 REQUEST_RATE=999
 BURSTNESS=1
-MAX_CONCUR=20
+MAX_CONCUR=200
 
 python3 $BENCHMARK_PATH/benchmark_serving.py \
         --base-url http://localhost:8000 \
@@ -27,7 +27,7 @@ python3 $BENCHMARK_PATH/benchmark_serving.py \
         --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
         --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
         --max-concurrency $MAX_CONCUR \
-	--random-input-len 1 --random-output-len 300 --ignore-eos
+	--random-input-len 1 --random-output-len 1900 --ignore-eos
 
 
 python3 $BENCHMARK_PATH/benchmark_serving.py \
