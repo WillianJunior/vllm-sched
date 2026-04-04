@@ -187,6 +187,10 @@ class Scheduler(Scheduler):
                     num_new_tokens = min(num_new_tokens, token_budget)
                     assert num_new_tokens > 0
 
+                    # TODO: caso de inversão: stopped in-mem, 
+                    # sem memória suficiente, waiting querendo entrar 
+                    # e não pode, stopped in-mem retorna para 
+                    # execução na frente do waiting! 
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request,
                         num_new_tokens,
