@@ -84,8 +84,11 @@ class Scheduler(Scheduler):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+        debug_rr = True
 
         all_submitted_reqs = len(self.running) + len(self.waiting)
+        #if debug_rr: print(f"[rr] all_reqs_num {all_submitted_reqs}")
+        #if debug_rr: print(f"[rr] all_reqs {self.requests}")
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -96,10 +99,11 @@ class Scheduler(Scheduler):
             # This just stops the execution of the request, i.e., will 
             # not generate tokens this turn.
             # Request remains in gpu memory
-            if all_submitted_reqs >= self.max_num_running_reqs and request.cur_time >= self.quantum:
-                stopped_req = self.running.pop()
-                stopped_reqs.append(stopped_req)
+            if all_submitted_reqs > self.max_num_running_reqs and request.cur_time >= self.quantum:
+                self.running.remove(request)
+                stopped_reqs.append(request)
                 req_index += 1
+                if debug_rr: print(f"[rr] stopping {request.request_id}")
                 continue
 
             num_new_tokens = 1
@@ -134,6 +138,7 @@ class Scheduler(Scheduler):
                     # for block space.
                     if stopped_reqs:
                         preempted_req = stopped_reqs.pop()
+                        if debug_rr: print(f"[rr] preempting stopped {preempted_req.request_id}")
                     else:
                         preempted_req = self.running.pop()
 
@@ -176,6 +181,8 @@ class Scheduler(Scheduler):
                 if request.cur_time > 0:
                     # Tokens already in memory, just a stopped request
                     num_new_tokens = 1
+                    num_computed_tokens = request.num_computed_tokens
+
 
                     num_new_tokens = min(num_new_tokens, token_budget)
                     assert num_new_tokens > 0
@@ -240,14 +247,18 @@ class Scheduler(Scheduler):
                     )
                 if request.cur_time > 0:
                     scheduled_running_reqs.append(request)
+                    if debug_rr: print(f"[rr] resumed {request.request_id}")
                 elif request.status == RequestStatus.WAITING:
                     scheduled_new_reqs.append(request)
+                    if debug_rr: print(f"[rr] starting from waiting {request.request_id}")
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
                 else:
                     raise RuntimeError(f"Invalid request status: {request.status}")
                 
-                request.cur_time += 1
+                # The first token is being processed in this step
+                # TODO: Use num_new_tokens? Watch for prefill.
+                request.cur_time = 1
                 
                 req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(
                     request_id
@@ -275,7 +286,7 @@ class Scheduler(Scheduler):
                 if len(self.running) == self.max_num_running_reqs:
                     break
 
-                request = stopped_reqs.peek_request()
+                request = stopped_reqs[0] # peek head
                 num_new_tokens = 1
                 num_new_tokens = min(num_new_tokens, token_budget)
 
@@ -296,6 +307,8 @@ class Scheduler(Scheduler):
                 request = stopped_reqs.pop()
                 self.running.append(request)
 
+                if debug_rr: print(f"[rr] resuming same step {request.request_id}")
+
                 # Schedule the request.
                 scheduled_running_reqs.append(request)
                 request_id = request.request_id
@@ -310,8 +323,12 @@ class Scheduler(Scheduler):
 
         # Put stopped requests in the waiting queue
         if stopped_reqs:
+            # Now stopped reqs are trully waiting
+            for req in stopped_reqs:
+                req.status = RequestStatus.WAITING
+
             # Stopped requests must go to the end of the waiting queue.
-            self.waiting.append_requests(stopped_reqs)
+            self.waiting.extend(stopped_reqs) # add in FCFS ordering
             # self.waiting.prepend_requests(stopped_reqs)
 
         # Check if the scheduling constraints are satisfied.

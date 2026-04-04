@@ -1,0 +1,31 @@
+module load cuda/12.3.2 anaconda3.2023.09-0
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+set -x
+set -e
+
+GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
+conda activate $GIT_ROOT_PATH/envs/vllm-0.9.2
+
+BENCHMARK_PATH=$GIT_ROOT_PATH/../vllm/benchmarks
+DATASET_PATH=$GIT_ROOT_PATH/datasets
+
+# Download dataset if not available
+[ -f $DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json ] || wget -O "$DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json" https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
+
+MODEL=/snfs1/llm-models/llama-3.2-3B-Instruct/
+NUM_PROMPTS=32
+REQUEST_RATE=999
+BURSTNESS=1
+MAX_CONCUR=20
+
+python3 $BENCHMARK_PATH/benchmark_serving.py \
+        --base-url http://localhost:8000 \
+        --backend vllm --model $MODEL \
+        --num-prompts $NUM_PROMPTS \
+        --dataset-name sharegpt \
+        --dataset-path $GIT_ROOT_PATH/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
+        --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
+        --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
+        --max-concurrency $MAX_CONCUR
+
