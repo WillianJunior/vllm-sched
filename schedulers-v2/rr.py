@@ -85,6 +85,7 @@ class Scheduler(Scheduler):
         # For logging.
         scheduled_timestamp = time.monotonic()
         debug_rr = True
+        will_print = False
 
         all_submitted_reqs = len(self.running) + len(self.waiting)
         #if debug_rr: print(f"[rr] all_reqs_num {all_submitted_reqs}")
@@ -92,7 +93,6 @@ class Scheduler(Scheduler):
 
         # First, schedule the RUNNING requests.
         req_index = 0
-        print(f"[rr][steps] sched running")
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
 
@@ -105,6 +105,7 @@ class Scheduler(Scheduler):
                 stopped_reqs.append(request)
                 req_index += 1
                 if debug_rr: print(f"[rr] stopping {request.request_id}")
+                will_print = True
                 continue
 
             num_new_tokens = 1
@@ -140,6 +141,7 @@ class Scheduler(Scheduler):
                     if stopped_reqs:
                         preempted_req = stopped_reqs.pop(0)
                         if debug_rr: print(f"[rr] preempting stopped by running {preempted_req.request_id}")
+                        will_print = True
                     else:
                         preempted_req = self.running.pop()
 
@@ -179,7 +181,6 @@ class Scheduler(Scheduler):
             stopped_reqs.sort(key=cmp_to_key(smaller_runtime_comparator))
 
             # Next, schedule the WAITING requests.
-            print(f"[rr][steps] sched waiting")
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
@@ -214,6 +215,7 @@ class Scheduler(Scheduler):
                     while not new_blocks and stopped_reqs:
                         preempted_req = stopped_reqs.pop()
                         if debug_rr: print(f"[rr] preempting stopped by waiting {preempted_req.request_id}")
+                        will_print = True
                         self._preempt_request(preempted_req, scheduled_timestamp)
                         preempted_req.cur_time = 0
                         preempted_reqs.append(preempted_req)
@@ -279,9 +281,11 @@ class Scheduler(Scheduler):
                 if request.cur_time > 0:
                     scheduled_running_reqs.append(request)
                     if debug_rr: print(f"[rr] resumed {request.request_id}")
+                    will_print = True
                 elif request.status == RequestStatus.WAITING:
                     scheduled_new_reqs.append(request)
                     if debug_rr: print(f"[rr] starting from waiting {request.request_id}")
+                    will_print = True
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
                 else:
@@ -306,7 +310,6 @@ class Scheduler(Scheduler):
             # Try to fill any remaining budget with requests that could 
             # should be stopped, but there is still some budget.
             # stopped_reqs is sorted by cur_time, ascending
-            print(f"[rr][steps] re-sched stopped")
             while stopped_reqs and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
@@ -333,6 +336,7 @@ class Scheduler(Scheduler):
                 self.running.append(request)
 
                 if debug_rr: print(f"[rr] resuming same step {request.request_id}")
+                will_print = True
 
                 # Schedule the request.
                 scheduled_running_reqs.append(request)
@@ -342,7 +346,6 @@ class Scheduler(Scheduler):
                 token_budget -= num_new_tokens
                 request.cur_time += 1
 
-        print(f"[rr][steps] preping output")
         
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
@@ -363,6 +366,11 @@ class Scheduler(Scheduler):
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
+
+        if will_print:
+            print(f"[rr][after_sched] reqs: {self.requests}")
+            print(f"[rr][after_sched] running: {self.running}")
+            print(f"[rr][after_sched] waiting: {self.waiting}")
 
         # Since some requests in the RUNNING queue may not be scheduled in
         # this step, the total number of scheduled requests can be smaller than
@@ -430,8 +438,6 @@ class Scheduler(Scheduler):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
         )
-
-        print(f"[rr][steps] _update_after_schedule")
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
