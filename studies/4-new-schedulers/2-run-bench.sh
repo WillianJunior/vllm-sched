@@ -23,6 +23,17 @@ python3 $BENCHMARK_PATH/benchmark_serving.py \
         --base-url http://localhost:8000 \
         --backend vllm --model $MODEL \
         --num-prompts $NUM_PROMPTS \
+        --dataset-name random \
+        --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
+        --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
+        --max-concurrency $MAX_CONCUR \
+	--random-input-len 1 --random-output-len 300 --ignore-eos
+
+
+python3 $BENCHMARK_PATH/benchmark_serving.py \
+        --base-url http://localhost:8000 \
+        --backend vllm --model $MODEL \
+        --num-prompts $NUM_PROMPTS \
         --dataset-name sharegpt \
         --dataset-path $GIT_ROOT_PATH/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
         --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
