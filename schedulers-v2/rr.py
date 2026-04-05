@@ -100,7 +100,9 @@ class Scheduler(Scheduler):
             # This just stops the execution of the request, i.e., will 
             # not generate tokens this turn.
             # Request remains in gpu memory
-            if all_submitted_reqs > self.max_num_running_reqs and request.cur_time >= self.quantum:
+            print(f"[rr] trying {request.request_id}, cur_time: {request.cur_time} - running: {len(self.running)}, waiting: {len(self.waiting)}, all_submitted_reqs={all_submitted_reqs}, self.max_num_running_req{self.max_num_running_reqs}")
+            #if self.waiting and all_submitted_reqs < self.max_num_running_reqs and request.cur_time >= self.quantum:
+            if self.waiting and request.cur_time >= self.quantum:
                 self.running.remove(request)
                 stopped_reqs.append(request)
                 req_index += 1
@@ -144,6 +146,7 @@ class Scheduler(Scheduler):
                         will_print = True
                     else:
                         preempted_req = self.running.pop()
+                        if debug_rr: print(f"[rr] preempting running by running {preempted_req.request_id}")
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
                     preempted_req.cur_time = 0
@@ -185,6 +188,8 @@ class Scheduler(Scheduler):
                 if len(self.running) == self.max_num_running_reqs:
                     break
 
+                print(f"[rr] waiting list: {self.waiting}")
+
                 request = self.waiting.peek_request()
                 request_id = request.request_id
 
@@ -221,35 +226,14 @@ class Scheduler(Scheduler):
                     num_new_tokens = min(num_new_tokens, token_budget)
                     assert num_new_tokens > 0
 
-                    # TODO: caso de inversão: stopped in-mem, 
-                    # sem memória suficiente, waiting querendo entrar 
-                    # e não pode, stopped in-mem retorna para 
-                    # execução na frente do waiting! 
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request,
                         num_new_tokens,
                         num_lookahead_tokens=self.num_lookahead_tokens,
                     )
 
-                    # Waiting requests can evict stopped requests
-                    # on OOM. 
-                    # Note: it is possible that the waiting req preempts
-                    # stopped reqs and still is not able to run.
-                    while not new_blocks and stopped_reqs:
-                        preempted_req = stopped_reqs.pop()
-                        if debug_rr: print(f"[rr] preempting stopped by waiting {preempted_req.request_id}")
-                        will_print = True
-                        self._preempt_request(preempted_req, scheduled_timestamp)
-                        preempted_req.cur_time = 0
-                        preempted_reqs.append(preempted_req)
-
-                        new_blocks = self.kv_cache_manager.allocate_slots(
-                            request,
-                            num_new_tokens,
-                            num_lookahead_tokens=self.num_lookahead_tokens,
-                        ) 
-
                 else:
+                    print(f"[rr] waiting trying {request.request_id}")
                     # Get already-cached tokens.
                     if request.num_computed_tokens == 0:
                         # Get locally-cached tokens.
@@ -319,7 +303,7 @@ class Scheduler(Scheduler):
 
                     num_encoder_tokens = 0
                     effective_lookahead_tokens = 0
-                    num_external_computed_tokens = 0
+                    #num_external_computed_tokens = 0
                     load_kv_async = False
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request,
@@ -331,6 +315,34 @@ class Scheduler(Scheduler):
                         delay_cache_blocks=load_kv_async,
                         num_encoder_tokens=num_encoder_tokens,
                     )
+
+                    # Waiting requests can evict stopped requests
+                    # on OOM.
+                    # Note: it is possible that the waiting req preempts
+                    # stopped reqs and still is not able to run.
+                    while not new_blocks and stopped_reqs:
+                        preempted_req = stopped_reqs.pop()
+                        if debug_rr: print(f"[rr] preempting stopped by waiting {preempted_req.request_id}")
+                        will_print = True
+                        self._preempt_request(preempted_req, scheduled_timestamp)
+                        preempted_req.cur_time = 0
+                        preempted_reqs.append(preempted_req)
+                        new_blocks = self.kv_cache_manager.allocate_slots(
+                            request,
+                            num_new_tokens,
+                            num_new_computed_tokens=num_new_local_computed_tokens,
+                            new_computed_blocks=new_computed_blocks,
+                            num_lookahead_tokens=effective_lookahead_tokens,
+                            num_external_computed_tokens=num_external_computed_tokens,
+                            delay_cache_blocks=load_kv_async,
+                            num_encoder_tokens=num_encoder_tokens,
+                        )
+
+                        #new_blocks = self.kv_cache_manager.allocate_slots(
+                        #    request,
+                        #    num_new_tokens,
+                        #    num_lookahead_tokens=self.num_lookahead_tokens,
+                        #)
 
                 if new_blocks is None:
                     # The request cannot be scheduled.
