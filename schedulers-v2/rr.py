@@ -6,7 +6,7 @@ import time
 
 from functools import cmp_to_key
 
-# import numpy as np
+import numpy as np
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
@@ -103,6 +103,21 @@ class Scheduler(Scheduler):
             # Request remains in gpu memory
             print(f"[rr] trying {request.request_id}, cur_time: {request.cur_time} - running: {len(self.running)}, waiting: {len(self.waiting)}, all_submitted_reqs={all_submitted_reqs}, self.max_num_running_req{self.max_num_running_reqs}")
 
+            num_new_tokens = (
+                request.num_tokens_with_spec
+                + request.num_output_placeholders
+                - request.num_computed_tokens
+                + 1
+            )
+
+            # Make sure the input position does not exceed the max model len.
+            # This is necessary when using spec decoding.
+            num_new_tokens = min(
+                num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
+            )
+
+            print(f"[rr][running] budget={token_budget}, num_new_tokens={num_new_tokens}, num_tokens_with_spec={request.num_tokens_with_spec}, num_output_placeholders={request.num_output_placeholders}, num_computed_tokens={request.num_computed_tokens}")
+
             # Whenever we self._preempt_request(req), req is moved to the waiting list
             # Thus, req was not waiting for execution. To fix the case in which a preemption
             # allows the stopping of another running req, we do this check outside the loop.
@@ -112,10 +127,27 @@ class Scheduler(Scheduler):
                 req_index += 1
                 if debug_rr: print(f"[rr] stopping {request.request_id}")
                 will_print = True
+                
                 continue
-
-            num_new_tokens = 1
-            num_new_tokens = min(num_new_tokens, token_budget)
+            
+            if num_new_tokens == 0:
+                # The request cannot be scheduled because one of the following
+                # reasons:
+                # 1. No new tokens to schedule. This may happen when
+                #    (1) PP>1 and we have already scheduled all prompt tokens
+                #    but they are not finished yet.
+                #    (2) Async scheduling and the request has reached to either
+                #    its max_total_tokens or max_model_len.
+                # 2. The encoder budget is exhausted.
+                # 3. The encoder cache is exhausted.
+                # 4. Insufficient budget for a block-aligned chunk in hybrid
+                #    models with mamba cache mode \"align\".
+                # NOTE(woosuk): Here, by doing `continue` instead of `break`,
+                # we do not strictly follow the FCFS scheduling policy and
+                # allow the lower-priority requests to be scheduled.
+                req_index += 1
+                print(f"[rr][running] no new tokens...")
+                continue
 
             # Schedule newly needed KV blocks for the request.
             with record_function_or_nullcontext("schedule: allocate_slots"):
@@ -155,6 +187,7 @@ class Scheduler(Scheduler):
                     self._preempt_request(preempted_req, scheduled_timestamp)
                     preempted_req.cur_time = 0
                     preempted_reqs.append(preempted_req)
+
                     if preempted_req == request:
                         # No more request to preempt. Cannot schedule this request.
                         break
@@ -300,6 +333,7 @@ class Scheduler(Scheduler):
 
                     # chunked prefill has to be enabled explicitly to allow
                     # pooling requests to be chunked
+                    print(f"[rr] waiting budget: num_new_tokens={num_new_tokens}, token_budget={token_budget}")
                     if (
                         not self.scheduler_config.enable_chunked_prefill
                         and num_new_tokens > token_budget
@@ -478,10 +512,10 @@ class Scheduler(Scheduler):
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
 
-        if will_print:
-            print(f"[rr][after_sched] reqs: {self.requests}")
-            print(f"[rr][after_sched] running: {self.running}")
-            print(f"[rr][after_sched] waiting: {self.waiting}")
+        #if will_print:
+        #    print(f"[rr][after_sched] reqs: {self.requests}")
+        #    print(f"[rr][after_sched] running: {self.running}")
+        #    print(f"[rr][after_sched] waiting: {self.waiting}")
 
         # Since some requests in the RUNNING queue may not be scheduled in
         # this step, the total number of scheduled requests can be smaller than
@@ -581,4 +615,4 @@ class Scheduler(Scheduler):
 
         # Put the request back to the waiting queue.
         # Will: for RR, reinsert in the back instead of prepending
-        self.waiting.append_request(request)
+        self.waiting.append(request)

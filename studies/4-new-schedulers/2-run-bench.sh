@@ -14,7 +14,7 @@ DATASET_PATH=$GIT_ROOT_PATH/datasets
 [ -f $DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json ] || wget -O "$DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json" https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
 
 MODEL=/snfs1/llm-models/llama-3.2-3B-Instruct/
-NUM_PROMPTS=6
+NUM_PROMPTS=30
 REQUEST_RATE=999
 BURSTNESS=1
 MAX_CONCUR=200
