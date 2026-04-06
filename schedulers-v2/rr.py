@@ -93,6 +93,7 @@ class Scheduler(Scheduler):
 
         # First, schedule the RUNNING requests.
         req_index = 0
+        has_waiting_reqs = len(self.waiting) > 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
 
@@ -101,8 +102,11 @@ class Scheduler(Scheduler):
             # not generate tokens this turn.
             # Request remains in gpu memory
             print(f"[rr] trying {request.request_id}, cur_time: {request.cur_time} - running: {len(self.running)}, waiting: {len(self.waiting)}, all_submitted_reqs={all_submitted_reqs}, self.max_num_running_req{self.max_num_running_reqs}")
-            #if self.waiting and all_submitted_reqs < self.max_num_running_reqs and request.cur_time >= self.quantum:
-            if self.waiting and request.cur_time >= self.quantum:
+
+            # Whenever we self._preempt_request(req), req is moved to the waiting list
+            # Thus, req was not waiting for execution. To fix the case in which a preemption
+            # allows the stopping of another running req, we do this check outside the loop.
+            if has_waiting_reqs and request.cur_time >= self.quantum:
                 self.running.remove(request)
                 stopped_reqs.append(request)
                 req_index += 1
@@ -192,6 +196,12 @@ class Scheduler(Scheduler):
 
                 request = self.waiting.peek_request()
                 request_id = request.request_id
+
+                # All waiting requests from now on should be preempted
+                # These cannot return due to OOM, i.e., no more
+                # schedulable waiting request
+                if request in preempted_reqs:
+                    break
 
                 # KVTransfer: skip request if still waiting for remote kvs.
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -324,6 +334,7 @@ class Scheduler(Scheduler):
                         preempted_req = stopped_reqs.pop()
                         if debug_rr: print(f"[rr] preempting stopped by waiting {preempted_req.request_id}")
                         will_print = True
+
                         self._preempt_request(preempted_req, scheduled_timestamp)
                         preempted_req.cur_time = 0
                         preempted_reqs.append(preempted_req)
@@ -337,12 +348,6 @@ class Scheduler(Scheduler):
                             delay_cache_blocks=load_kv_async,
                             num_encoder_tokens=num_encoder_tokens,
                         )
-
-                        #new_blocks = self.kv_cache_manager.allocate_slots(
-                        #    request,
-                        #    num_new_tokens,
-                        #    num_lookahead_tokens=self.num_lookahead_tokens,
-                        #)
 
                 if new_blocks is None:
                     # The request cannot be scheduled.
@@ -554,3 +559,26 @@ class Scheduler(Scheduler):
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         return scheduler_output
+
+    def _preempt_request(self, request: Request, timestamp: float) -> None:
+        """Preempt a request and put it back to the waiting queue.
+
+        NOTE: The request should be popped from the running queue outside of this
+        method.
+        """
+        assert request.status == RequestStatus.RUNNING, (
+            "Only running requests can be preempted"
+        )
+        self.kv_cache_manager.free(request)
+        self.encoder_cache_manager.free(request)
+        request.status = RequestStatus.PREEMPTED
+        request.num_computed_tokens = 0
+        if request.spec_token_ids:
+            request.spec_token_ids = []
+        request.num_preemptions += 1
+        if self.log_stats:
+            request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
+
+        # Put the request back to the waiting queue.
+        # Will: for RR, reinsert in the back instead of prepending
+        self.waiting.append_request(request)
