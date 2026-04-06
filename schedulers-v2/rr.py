@@ -435,15 +435,34 @@ class Scheduler(Scheduler):
                     scheduled_resumed_reqs.append(request)
                 else:
                     raise RuntimeError(f"Invalid request status: {request.status}")
+
+                # TEST: When adding blocks to req_to_new_blocks, engine assume they
+                # are not in memory, and should be allocated. This is not true for
+                # stopped reqs. If not skipping this, the same block is added
+                # over again to the req, exceding the max num of blocks per req limit.
+                #if request.cur_time == 0:
+                #    print(f"[rr] waiting ---- got blocks for {request.request_id}")
+                req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(
+                    request_id
+                )
+                
+                # If the request is already in memory, only add the new blocks which are
+                # actually new. I.e., if a new block is required, then add it for 
+                # allocation. This fixes the issue with kv cache metadata having the
+                # same blocks duplicated within it.
+                if request.cur_time > 0:
+                    print(req_to_new_blocks[request_id])
+                    print(new_blocks)
+                    # TODO: improve the code below to stop breaking the interface of KVCacheBlocks
+                    prev_blocks = req_to_new_blocks[request_id].blocks[0]
+                    new_blocks = new_blocks.blocks[0]
+                    new_blocks = [b for b in new_blocks if b not in prev_blocks]
+                    req_to_new_blocks[request_id] = self.kv_cache_manager.create_kv_cache_blocks((new_blocks, ))
                 
                 # The first token is being processed in this step
                 # TODO: Use num_new_tokens? Watch for prefill.
                 request.cur_time = 1
                 
-                req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(
-                    request_id
-                )
-
                 num_scheduled_tokens[request_id] = num_new_tokens
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
