@@ -1,3 +1,54 @@
+import time
+# from collections import defaultdict, deque
+# from collections.abc import Iterable
+# from dataclasses import replace
+# from typing import Any
+
+from functools import cmp_to_key
+
+import numpy as np
+
+from vllm.config import VllmConfig
+from vllm.logger import init_logger
+from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
+from vllm.v1.core.sched.request_queue import create_request_queue
+from vllm.v1.engine import EngineCoreEventType
+from vllm.v1.kv_cache_interface import KVCacheConfig
+from vllm.v1.request import Request, RequestStatus, StreamingUpdate
+from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.structured_output import StructuredOutputManager
+from vllm.v1.utils import record_function_or_nullcontext
+
+logger = init_logger(__name__)
+
+class Scheduler(Scheduler):
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        kv_cache_config: KVCacheConfig,
+        structured_output_manager: StructuredOutputManager,
+        block_size: int,
+        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+        include_finished_set: bool = False,
+        log_stats: bool = False,
+    ) -> None:
+        # Base Scheduler init...
+        super().__init__(
+            vllm_config,
+            kv_cache_config,
+            structured_output_manager,
+            block_size,
+            mm_registry,
+            include_finished_set,
+            log_stats,
+        )
+
+        # In number of generated decode tokens
+        self.quantum = 200
+
+        setattr(Request, "cur_time", 0)
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
@@ -31,16 +82,20 @@
         has_waiting_reqs = len(self.waiting) > 0
         stopped_reqs = []
 
+        #print("[rr] scheduling...")
+
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
 
+            #print(f"[rr][running] trying req {request.request_id}, idx=(req_index), running={len(self.running)}")
+
             # Check quantum preemption
             if has_waiting_reqs and request.cur_time > self.quantum:
                 request.status = RequestStatus.WAITING # Need to place this here??
                 stopped_reqs.append(request)
-                self.running.remove(request)
+                self.running.pop(req_index)
                 continue
 
             if (
@@ -204,7 +259,8 @@
         def smaller_runtime_comparator(lhs, rhs):
             return lhs.cur_time - rhs.cur_time
         stopped_reqs.sort(key=cmp_to_key(smaller_runtime_comparator))
-
+        
+        #print(f"[rr] starting waiting...")
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
@@ -213,6 +269,8 @@
 
                 request = self.waiting.peek_request()
                 request_id = request.request_id
+
+                #print(f"[rr][waiting] trying req {request_id}, {len(self.waiting)} still waiting")
 
                 # KVTransfer: skip request if still waiting for remote kvs.
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -492,6 +550,9 @@
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
 
+        if stopped_reqs:
+            self.waiting.extend(stopped_reqs)
+
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
@@ -584,6 +645,8 @@
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
+
+        #print(f"[rr] done scheduling")
         return scheduler_output
 
 
