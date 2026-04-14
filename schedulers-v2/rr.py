@@ -82,7 +82,7 @@ class Scheduler(Scheduler):
         has_waiting_reqs = len(self.waiting) > 0
         stopped_reqs = []
 
-        #print("[rr] scheduling...")
+        print("[rr] scheduling................................................")
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -95,7 +95,10 @@ class Scheduler(Scheduler):
             if has_waiting_reqs and request.cur_time > self.quantum:
                 request.status = RequestStatus.WAITING # Need to place this here??
                 stopped_reqs.append(request)
+                # NOT adding to waiting. Can schedule in the next step
+                self.waiting.append(request)
                 self.running.pop(req_index)
+                print(f"[rr][running] quantum {request.request_id}")
                 continue
 
             if (
@@ -185,11 +188,12 @@ class Scheduler(Scheduler):
 
                     if stopped_reqs:
                         preempted_req = stopped_reqs.pop(0)
+                        self.waiting.remove(preempted_req)
+                        print(f"[rr][running] preempting from stopped {preempted_req.request_id}")
                     else:
                         # self.running.pop()  => pop last  => FCFS
                         # self.running.pop(0) => pop first => force RR
                         # i.e., if OOM, preempts the req with the largest runtime
-
                         preempted_req = self.running.pop(0)
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
@@ -269,6 +273,8 @@ class Scheduler(Scheduler):
 
                 request = self.waiting.peek_request()
                 request_id = request.request_id
+
+                print(f"[rr][waiting] trying to run {request_id}")
 
                 #print(f"[rr][waiting] trying req {request_id}, {len(self.waiting)} still waiting")
 
@@ -397,7 +403,9 @@ class Scheduler(Scheduler):
                         # If chunked_prefill is disabled,
                         # we can stop the scheduling here.
                         break
-
+                    
+                    if num_new_tokens == 0:
+                        num_new_tokens = 1 # BAD TEST!!! throughput breaks. maybe some in_mem req was being executed??
                     num_new_tokens = min(num_new_tokens, token_budget)
                     assert num_new_tokens > 0
 
@@ -458,16 +466,27 @@ class Scheduler(Scheduler):
 
                     if new_blocks is not None:
                         # The request can be scheduled.
+                        print(f"[rr][waiting] req {request.request_id} can be sched")
                         break
 
-                    if stopped_reqs:
-                        preempted_req = stopped_reqs.pop(0)
-                        self._preempt_request(preempted_req, scheduled_timestamp)
-                        preempted_reqs.append(preempted_req)
-                    else:
-                        # Cannot preempt any other stopped request, thus, cannot 
+                    if not stopped_reqs:
+                        # Cannot preempt any other stopped request, thus, cannot
                         # schedule this waiting req at this time
+                        print(f"[rr][waiting] req {request.request_id} cannot be sched, not enought mem")
                         break
+                    
+                    if request == stopped_reqs[0]:
+                        # To schedule this req, would need to preempt itself...
+                        print(f"[rr][waiting] stopped req {request.request_id} is the same as waiting req")
+                        break
+
+                    print(f"[rr][waiting] preempting {stopped_reqs[0].request_id} for running {request.request_id}")
+                    print(self.waiting)
+                    print(stopped_reqs)
+                    preempted_req = stopped_reqs.pop(0)
+                    self.waiting.remove(preempted_req)
+                    self._preempt_request(preempted_req, scheduled_timestamp)
+                    preempted_reqs.append(preempted_req)
 
                 if new_blocks is None:
                     # The request cannot be scheduled.
@@ -501,6 +520,17 @@ class Scheduler(Scheduler):
                 # Request was already popped from self.waiting
                 # unless it was re-added above due to new_blocks being None.
                 request = self.waiting.pop_request()
+
+                # Stoppted req is back to running
+                # Using `in` is bad...
+                # However, the stopped req could be stopped from a
+                # previous sched step. i.e., it is IN_MEM, but not in
+                # the stopped_reqs list.
+                # Still need to remove from stopped reqs to avoid preempting a 
+                # previously stopped req which is now running from waiting
+                if request in stopped_reqs:
+                    stopped_reqs.remove(request)
+
                 if load_kv_async:
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
@@ -546,12 +576,13 @@ class Scheduler(Scheduler):
                         self.encoder_cache_manager.allocate(request, i)
                         if self.ec_connector is not None:
                             self.ec_connector.update_state_after_alloc(request, i)
+
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
 
-        if stopped_reqs:
-            self.waiting.extend(stopped_reqs)
+        #if stopped_reqs:
+        #    self.waiting.extend(stopped_reqs)
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
@@ -564,7 +595,7 @@ class Scheduler(Scheduler):
         # len(self.running).
         assert len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
             scheduled_running_reqs
-        ) <= len(self.running)
+        ) <= self.max_num_running_reqs
 
         # Get the longest common prefix among all requests in the running queue.
         # This can be potentially used for cascade attention.
@@ -656,9 +687,11 @@ class Scheduler(Scheduler):
         NOTE: The request should be popped from the running queue outside of this
         method.
         """
-        assert request.status == RequestStatus.RUNNING, (
-            "Only running requests can be preempted"
-        )
+        # TODO: This is bad... Should add another Status: IN_MEM, which is waiting
+        # but can be preempted, i.e., swapped out. Currently, IN_MEM is WAITING
+        #assert request.status == RequestStatus.RUNNING, (
+        #    "Only running requests can be preempted"
+        #)
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED

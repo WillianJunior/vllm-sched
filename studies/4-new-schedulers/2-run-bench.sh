@@ -6,6 +6,7 @@ set -e
 
 GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
 conda activate $GIT_ROOT_PATH/envs/vllm-0.9.2
+#conda activate ../../envs/vllm-0.16.0/
 
 BENCHMARK_PATH=$GIT_ROOT_PATH/../vllm/benchmarks
 DATASET_PATH=$GIT_ROOT_PATH/datasets
@@ -19,7 +20,7 @@ REQUEST_RATE=999
 BURSTNESS=1
 MAX_CONCUR=200
 
-DO_RANDOM=1
+DO_RANDOM=0
 DO_SHARE=1
 
 if [ "$DO_RANDOM" = "1" ]; then
@@ -43,5 +44,9 @@ python3 $BENCHMARK_PATH/benchmark_serving.py \
         --dataset-path $GIT_ROOT_PATH/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
         --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
         --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
-        --max-concurrency $MAX_CONCUR
+        --max-concurrency $MAX_CONCUR \
+	--save-result \
+	--result-dir results \
+	--result-filename test.json
+	--save-detailed
 fi
