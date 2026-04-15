@@ -82,7 +82,7 @@ class Scheduler(Scheduler):
         has_waiting_reqs = len(self.waiting) > 0
         stopped_reqs = []
 
-        print("[rr] scheduling................................................")
+        #print("[rr] scheduling................................................")
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -98,7 +98,7 @@ class Scheduler(Scheduler):
                 # NOT adding to waiting. Can schedule in the next step
                 self.waiting.append(request)
                 self.running.pop(req_index)
-                print(f"[rr][running] quantum {request.request_id}")
+                #print(f"[rr][running] quantum {request.request_id}")
                 continue
 
             if (
@@ -189,7 +189,7 @@ class Scheduler(Scheduler):
                     if stopped_reqs:
                         preempted_req = stopped_reqs.pop(0)
                         self.waiting.remove(preempted_req)
-                        print(f"[rr][running] preempting from stopped {preempted_req.request_id}")
+                        #print(f"[rr][running] preempting from stopped {preempted_req.request_id}")
                     else:
                         # self.running.pop()  => pop last  => FCFS
                         # self.running.pop(0) => pop first => force RR
@@ -266,15 +266,13 @@ class Scheduler(Scheduler):
         
         #print(f"[rr] starting waiting...")
         # Next, schedule the WAITING requests.
-        if not preempted_reqs:
-            while self.waiting and token_budget > 0:
+        #if not preempted_reqs:
+        while not preempted_reqs and self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
 
                 request = self.waiting.peek_request()
                 request_id = request.request_id
-
-                print(f"[rr][waiting] trying to run {request_id}")
 
                 #print(f"[rr][waiting] trying req {request_id}, {len(self.waiting)} still waiting")
 
@@ -466,23 +464,23 @@ class Scheduler(Scheduler):
 
                     if new_blocks is not None:
                         # The request can be scheduled.
-                        print(f"[rr][waiting] req {request.request_id} can be sched")
+                        #print(f"[rr][waiting] req {request.request_id} can be sched")
                         break
 
                     if not stopped_reqs:
                         # Cannot preempt any other stopped request, thus, cannot
                         # schedule this waiting req at this time
-                        print(f"[rr][waiting] req {request.request_id} cannot be sched, not enought mem")
+                        #print(f"[rr][waiting] req {request.request_id} cannot be sched, not enought mem")
                         break
                     
                     if request == stopped_reqs[0]:
                         # To schedule this req, would need to preempt itself...
-                        print(f"[rr][waiting] stopped req {request.request_id} is the same as waiting req")
+                        #print(f"[rr][waiting] stopped req {request.request_id} is the same as waiting req")
                         break
 
-                    print(f"[rr][waiting] preempting {stopped_reqs[0].request_id} for running {request.request_id}")
-                    print(self.waiting)
-                    print(stopped_reqs)
+                    #print(f"[rr][waiting] preempting {stopped_reqs[0].request_id} for running {request.request_id}")
+                    #print(self.waiting)
+                    #print(stopped_reqs)
                     preempted_req = stopped_reqs.pop(0)
                     self.waiting.remove(preempted_req)
                     self._preempt_request(preempted_req, scheduled_timestamp)
