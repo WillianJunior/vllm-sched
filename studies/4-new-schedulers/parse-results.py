@@ -19,8 +19,8 @@ def parse_filename(filename):
     # last 4 fields are fixed structure
     scheduler, offload, kvmem, test_case = parts[-4:]
 
-    if scheduler == 'none':
-        scheduler = 'FCFS'
+    #if scheduler == 'none':
+    #    scheduler = 'FCFS'
 
     offload = offload.strip('offld')
     kvmem = kvmem.strip('kvmem')

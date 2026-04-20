@@ -1,12 +1,15 @@
+set -e
+set +x
+
 module load anaconda3.2023.09-0
 
 conda activate ../../envs/vllm-0.16.0/
 
+set -x
+
 #export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/4-new-schedulers:$PYTHONPATH"
 export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/schedulers-v2:$PYTHONPATH"
 
-set -e
-set -x
 
 GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
 
@@ -51,8 +54,10 @@ python3 $GIT_ROOT_PATH/util/wait_vllm.py
 # === Benchmarks =============================================
 
 # This benchmark only runs on this env...
+set +x
 conda deactivate
 conda activate $GIT_ROOT_PATH/envs/vllm-0.9.2
+set -x
 
 DO_THROUGHPUT=1
 DO_SHARE=1
