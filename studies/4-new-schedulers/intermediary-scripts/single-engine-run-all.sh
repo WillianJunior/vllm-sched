@@ -94,7 +94,7 @@ SHARE_FILENAME="res-$BASE_FILENAME-share.json"
 python3 $BENCHMARK_PATH/benchmark_serving.py \
         --base-url http://localhost:8000 \
         --backend vllm --model $MODEL \
-        --num-prompts $NUM_PROMPTS \
+	--num-prompts $(( 10 * $NUM_PROMPTS )) \
         --dataset-name sharegpt \
         --dataset-path $GIT_ROOT_PATH/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
         --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
