@@ -246,6 +246,8 @@ class Scheduler(Scheduler):
         # Returns whether the request can be scheduled
         # as a waiting request
 
+        print(f"[rr][_prepare_waiting_remote_kvs] {request.request_id,}")
+
         is_ready = self._update_waiting_for_remote_kv(request)
         if is_ready:
             if request.num_preemptions:
@@ -268,6 +270,8 @@ class Scheduler(Scheduler):
     def _prepare_waiting_fsm(self, request, skipped_waiting_requests):
         # Returns whether the request can be scheduled
         # as a waiting request
+
+        print(f"[rr][_prepare_waiting_fsm] {request.request_id,}")
 
         structured_output_req = request.structured_output_request
         if structured_output_req and structured_output_req.grammar:
@@ -320,6 +324,14 @@ class Scheduler(Scheduler):
         all_reqs_queue.extend(self.running)
         all_reqs_queue.extend(self.waiting)
 
+        print("[rr] self.waiting:")
+        for r in self.waiting:
+            print(f"\t{r.request_id}")
+
+        print("[rr] self.running:")
+        for r in self.running:
+            print(f"\t{r.request_id}")
+
         #print(self.waiting)
         #print(self.running)
         #print(all_reqs_queue)
@@ -359,11 +371,6 @@ class Scheduler(Scheduler):
         # for generating the scheduler the outputs
         num_sched_reqs = 0
         while all_reqs_queue:
-            request = all_reqs_queue.pop(0)
-            request_id = request.request_id
-
-            print(f"[rr][all_reqs] trying req {request_id}, {len(all_reqs_queue)} remaining in the queue, num_sched_reqs={num_sched_reqs}")
-
             if num_sched_reqs >= self.max_num_running_reqs:
                 print(f"[rr][all_reqs] reached MNS: len(scheduled_running_reqs)={len(scheduled_running_reqs)}, len(self.running)={len(self.running)})")
                 break
@@ -371,6 +378,11 @@ class Scheduler(Scheduler):
             if token_budget <= 0:
                 print(f"[rr][all_reqs] exausted token_budget")
                 break
+
+            request = all_reqs_queue.pop(0)
+            request_id = request.request_id
+
+            print(f"[rr][all_reqs] trying req {request_id}, {len(all_reqs_queue)} remaining in the queue, num_sched_reqs={num_sched_reqs}")
 
             if request.status == RequestStatus.RUNNING:
                 # In memory, ran in the previous step
@@ -410,6 +422,7 @@ class Scheduler(Scheduler):
 
             # Special waiting, but cannot be scheduled at the moment
             if not special_waiting_can_schedule:
+                print(f"[rr][waiting] not special_waiting_can_schedule")
                 continue
 
             # =======================================================
@@ -516,6 +529,7 @@ class Scheduler(Scheduler):
                 ):
                     # If chunked_prefill is disabled,
                     # we can stop the scheduling here.
+                    print(f"[rr][waiting] pooling/chunked preffil break")
                     break
                 
                 #if num_new_tokens == 0:
@@ -540,6 +554,7 @@ class Scheduler(Scheduler):
                     )
                     if num_new_tokens == 0:
                         # The request cannot be scheduled.
+                        print(f"[rr][waiting] encoder: num_new_tokens == 0")
                         break
 
             if self.need_mamba_block_aligned_split:
@@ -550,6 +565,7 @@ class Scheduler(Scheduler):
                     num_external_computed_tokens,
                 )
                 if num_new_tokens == 0:
+                    print(f"[rr][waiting] mamba: num_new_tokens == 0")
                     break
 
             # Handles an edge case when P/D Disaggregation
@@ -569,7 +585,7 @@ class Scheduler(Scheduler):
 
             # =======================================================
             # Allocating kv cache blocks
-
+            print(f"[rr][waiting] trying to allocate blocks")
             while True:
                 if request.cur_time > 0:
                     # Request waiting but in-memory
@@ -592,21 +608,10 @@ class Scheduler(Scheduler):
 
                 if new_blocks is not None:
                     # The request can be scheduled.
-                    #print(f"[rr][waiting] req {request.request_id} can be sched")
+                    print(f"[rr][waiting] req {request.request_id} can be sched")
                     break
 
-                # if request == all_reqs_queue[-1]:
-                #     # To schedule this req, would need to preempt itself...
-                #     #print(f"[rr][waiting] stopped req {request.request_id} is the same as waiting req")
-                #     break
 
-                #print(f"[rr][waiting] preempting {stopped_reqs[0].request_id} for running {request.request_id}")
-                #print(self.waiting)
-                #print(stopped_reqs)
-                # print(f"[rr][waiting] stopped_reqs:")
-                # for r in stopped_reqs:
-                #     print(f"[rr][waiting]\t{r.request_id}")
-                
                 # Preempting the request with the least priority
                 # Special case: all_reqs_queue = [R, WiM, W] with R being
                 # the current request, WiM being waiting in-mem (i.e., can
@@ -623,8 +628,9 @@ class Scheduler(Scheduler):
                         # request. Cannot preempt it. Just ignore
                         break
 
-                if not all_reqs_queue:
+                if not all_reqs_queue and preempted_req.num_computed_tokens == 0:
                     # No other valid requests to preempt. Not enough kv blocks.
+                    print("[rr][waiting] cannot preempt to allocate blocks")
                     break
 
                 preempted_req_id = preempted_req.request_id
