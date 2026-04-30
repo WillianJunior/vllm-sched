@@ -51,6 +51,13 @@ class Scheduler(Scheduler):
         self.sched_step = 0
 
         setattr(Request, "cur_time", 0)
+        
+        # Will: bad bug fix...
+        # waiting_remote_kvs changes to PREEMPTED when available for execution.
+        # however, it was on self.running before, not self.waiting.
+        # When scheduling a PREEMPTED req we self.waiting.pop(req).
+        # This only skips the self.waiting.pop(req).
+        setattr(Request, "was_waiting_remote_kvs", False)
 
 
     def _schedule_running(self, request, requests_queue, token_budget, 
@@ -71,6 +78,7 @@ class Scheduler(Scheduler):
         # req can schedule either.
 
         print(f"[rr][running] trying {request.request_id}")
+        assert len(self.waiting) == len(set(self.waiting))
 
         # === 1. pre-checks =========================================
 
@@ -161,14 +169,20 @@ class Scheduler(Scheduler):
                     # The request can be scheduled.
                     break
 
-                if not requests_queue:
-                    # No requests to preempt
+                # preempted_req = self.running.pop(0)
+                while requests_queue:
+                    preempted_req = requests_queue.pop()
+                    if preempted_req.num_computed_tokens > 0:
+                        # If num_computed_token=0, then this is a new
+                        # request. Cannot preempt it. Just ignore
+                        break
+
+                if not requests_queue and preempted_req.num_computed_tokens == 0:
+                    # No other valid requests to preempt. Not enough kv blocks.
+                    print("[rr][running] cannot preempt to allocate blocks")
                     break
 
-                # preempted_req = self.running.pop(0)
-
-                # Preempt the last request in the queue
-                preempted_req = requests_queue.pop()
+                # Preempting the last (valid) request in the queue
                 preempted_req_id = preempted_req.request_id
                 print(f"[rr][running] preempting {preempted_req_id}")
 
@@ -185,6 +199,9 @@ class Scheduler(Scheduler):
                     encoder_compute_budget += num_embeds_to_restore
 
                 self._preempt_request(preempted_req, scheduled_timestamp)
+                if preempted_req.status == RequestStatus.RUNNING:
+                    self.running.remove(preempted_req.status)
+                    self.waiting.append(preempted_req)
                 preempted_reqs.append(preempted_req)
                 if preempted_req == request:
                     # No more request to preempt. Cannot schedule this request.
@@ -246,7 +263,7 @@ class Scheduler(Scheduler):
         # Returns whether the request can be scheduled
         # as a waiting request
 
-        print(f"[rr][_prepare_waiting_remote_kvs] {request.request_id,}")
+        print(f"[rr][_prepare_waiting_remote_kvs] {request.request_id}")
 
         is_ready = self._update_waiting_for_remote_kv(request)
         if is_ready:
@@ -254,6 +271,7 @@ class Scheduler(Scheduler):
                 # We must be loading for a resumed preemption
                 # rather than a new request.
                 request.status = RequestStatus.PREEMPTED
+                request.was_waiting_remote_kvs = True
             else:
                 request.status = RequestStatus.WAITING
 
@@ -263,8 +281,9 @@ class Scheduler(Scheduler):
                 "%s is still in WAITING_FOR_REMOTE_KVS state.",
                 request.request_id,
             )
-            self.waiting.pop_request()
-            skipped_waiting_requests.prepend_request(request)
+            #self.waiting.pop_request()
+            #will #self.waiting.remove(request)
+            #skipped_waiting_requests.prepend_request(request)
             return False
 
     def _prepare_waiting_fsm(self, request, skipped_waiting_requests):
@@ -278,8 +297,9 @@ class Scheduler(Scheduler):
             request.status = RequestStatus.WAITING
             return True
         else:
-            self.waiting.pop_request()
-            skipped_waiting_requests.prepend_request(request)
+            #self.waiting.pop_request()
+            #will #self.waiting.remove(request)
+            #skipped_waiting_requests.prepend_request(request)
             return False
 
 
@@ -324,13 +344,14 @@ class Scheduler(Scheduler):
         all_reqs_queue.extend(self.running)
         all_reqs_queue.extend(self.waiting)
 
-        print("[rr] self.waiting:")
-        for r in self.waiting:
-            print(f"\t{r.request_id}")
+        if False: # just disable printing
+            print("[rr] self.waiting:")
+            for r in self.waiting:
+                print(f"\t{r.request_id}")
 
-        print("[rr] self.running:")
-        for r in self.running:
-            print(f"\t{r.request_id}")
+            print("[rr] self.running:")
+            for r in self.running:
+                print(f"\t{r.request_id}")
 
         #print(self.waiting)
         #print(self.running)
@@ -413,8 +434,9 @@ class Scheduler(Scheduler):
             elif request.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
                 print(f"[rr] waiting is wait streaming")
                 assert not request.streaming_queue
-                self.waiting.pop_request()
-                skipped_waiting_requests.prepend_request(request)
+                #self.waiting.pop_request()
+                #self.waiting.remove(request)
+                #will #skipped_waiting_requests.prepend_request(request)
                 special_waiting_can_schedule = False
             else:
                 print(f"[rr] waiting is regular waiting")
@@ -443,8 +465,9 @@ class Scheduler(Scheduler):
                 )
             ):
                 # Scheduling would exceed max_loras, skip.
-                self.waiting.pop_request()
-                skipped_waiting_requests.prepend_request(request)
+                #self.waiting.pop_request()
+                #will self.waiting.remove(request)
+                #skipped_waiting_requests.prepend_request(request)
                 continue
 
             # =======================================================
@@ -474,8 +497,9 @@ class Scheduler(Scheduler):
                         # The request cannot be scheduled because
                         # the KVConnector couldn't determine
                         # the number of matched tokens.
-                        self.waiting.pop_request()
-                        skipped_waiting_requests.prepend_request(request)
+                        #self.waiting.pop_request()
+                        #will #self.waiting.remove(request)
+                        #skipped_waiting_requests.prepend_request(request)
                         continue
 
                     request.num_external_computed_tokens = ext_tokens
@@ -634,6 +658,10 @@ class Scheduler(Scheduler):
                     break
 
                 preempted_req_id = preempted_req.request_id
+                if preempted_req_id == request_id:
+                    # Cannot preempt itself for running
+                    print("[rr][waiting] cannot preempt itself to allocate blocks")
+                    break
 
                 preempted_encoder_inputs = scheduled_encoder_inputs.pop(
                     preempted_req_id, None
@@ -647,12 +675,20 @@ class Scheduler(Scheduler):
                     )
                     encoder_compute_budget += num_embeds_to_restore
 
+                
+
                 print(f"[rr][waiting] preempting {preempted_req.request_id}")
                 if preempted_req.status == RequestStatus.RUNNING:
+                    print(f"[rr][wating] preempted {preempted_req_id} from running: {preempted_req in self.running}")
                     self.running.remove(preempted_req)
                 else:
+                    print(f"[rr][wating] preempted {preempted_req_id} from waiting: {preempted_req in self.waiting}")
                     self.waiting.remove(preempted_req)
                 self._preempt_request(preempted_req, scheduled_timestamp)
+                assert preempted_req not in self.waiting
+                self.waiting.append(preempted_req)
+                unique_waiting = len(self.waiting) == len(set(self.waiting))
+                assert unique_waiting, f"failed at req {request.request_id}"
                 preempted_reqs.append(preempted_req)
 
             if new_blocks is None:
@@ -689,8 +725,16 @@ class Scheduler(Scheduler):
             # Scheduling request as running
 
             # Request is not waiting anymore
-            print(f"[rr][waiting] removing from waiting: {request.request_id}")
-            self.waiting.remove(request)
+            print(f"[rr][waiting] removing from waiting: {request.request_id} status={request.status}")
+            if not request.was_waiting_remote_kvs:
+                self.waiting.remove(request)
+            else:
+                # Request need to be added later to self.running. This avoids
+                # duplication in self.running.
+                self.running.remove(request)
+
+                # request will change state
+                request.was_waiting_remote_kvs = False
 
             if load_kv_async:
                 # If loading async, allocate memory and put request
@@ -758,17 +802,24 @@ class Scheduler(Scheduler):
             if request.status == RequestStatus.RUNNING:
                 print(f"[rr][prep_output] req {request.request_id} was running, not anymore...")
                 request.status = RequestStatus.WAITING
+                assert request not in self.waiting
                 self.waiting.append(request)
                 self.running.remove(request)
+                assert len(self.waiting) == len(set(self.waiting))
 
         print(f"[rr][prep_output] running: {len(self.running)}, waiting: {len(self.waiting)}")
+
+        assert len(self.waiting) == len(set(self.waiting))
+        assert len(self.running) == len(set(self.running))
 
         if self.lora_config:
             assert len(scheduled_loras) <= self.lora_config.max_loras
 
         # Put back any skipped requests at the head of the waiting queue
-        if skipped_waiting_requests:
-            self.waiting.prepend_requests(skipped_waiting_requests)
+        # will: no need for this anymore... waiting is not being consumed anymore
+        #if skipped_waiting_requests:
+        #    self.waiting.prepend_requests(skipped_waiting_requests)
+        #    assert len(self.waiting) == len(set(self.waiting))
 
         #if stopped_reqs:
         #    self.waiting.extend(stopped_reqs)
@@ -816,12 +867,24 @@ class Scheduler(Scheduler):
                 for req in scheduled_new_reqs
             ]
 
-        print(f"[rr][cached_reqs] sched_running:")
-        for r in scheduled_running_reqs:
-            print(f"\t{r.request_id}")
-        print(f"[rr][cached_reqs] sched_resumed:")
-        for r in scheduled_resumed_reqs:
-            print(f"\t{r.request_id}")
+        if False: # just disable the prints
+            print(f"[rr][cached_reqs] sched_running:")
+            for r in scheduled_running_reqs:
+                print(f"\t{r.request_id}")
+            print(f"[rr][cached_reqs] sched_resumed:")
+            for r in scheduled_resumed_reqs:
+                print(f"\t{r.request_id}")
+
+            print(f"[rr][cached_reqs] waiting")
+            for r in self.waiting:
+                print(f"\t{r.request_id}")
+
+            print(f"[rr][cached_reqs] running:")
+            for r in self.running:
+                print(f"\t{r.request_id}")
+
+        assert len(self.waiting) == len(set(self.waiting))
+        assert len(self.running) == len(set(self.running))
 
         with record_function_or_nullcontext("schedule: make_cached_request_data"):
             cached_reqs_data = self._make_cached_request_data(
@@ -892,6 +955,7 @@ class Scheduler(Scheduler):
         #)
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
+        #was_waiting = request.status == RequestStatus.WAITING
         request.status = RequestStatus.PREEMPTED
         request.num_computed_tokens = 0
         if request.spec_token_ids:
@@ -909,7 +973,11 @@ class Scheduler(Scheduler):
             request.cur_time = 0
 
             # Will: for RR, reinsert in the back instead of prepending
-            self.waiting.append(request)
+            # Will: can preempt waiting reqs which were in-mem, but not running.
+            # No need to add them again to self.waiting.
+            #if not was_waiting:
+            #    self.waiting.append(request) # no longer reinsert to waiting. caller must choose where to reinsert...
+            #assert len(self.waiting) == len(set(self.waiting))
         else:
             # Put the request back to the waiting queue.
             self.waiting.prepend_request(request)
