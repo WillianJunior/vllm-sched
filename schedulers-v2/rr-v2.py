@@ -184,7 +184,7 @@ class Scheduler(Scheduler):
 
                 # Preempting the last (valid) request in the queue
                 preempted_req_id = preempted_req.request_id
-                print(f"[rr][running] preempting {preempted_req_id}")
+                print(f"[rr][running] preempting {preempted_req_id} with status {preempted_req.status}")
 
                 preempted_encoder_inputs = scheduled_encoder_inputs.pop(
                     preempted_req_id, None
@@ -198,10 +198,10 @@ class Scheduler(Scheduler):
                     )
                     encoder_compute_budget += num_embeds_to_restore
 
-                self._preempt_request(preempted_req, scheduled_timestamp)
                 if preempted_req.status == RequestStatus.RUNNING:
-                    self.running.remove(preempted_req.status)
+                    self.running.remove(preempted_req)
                     self.waiting.append(preempted_req)
+                self._preempt_request(preempted_req, scheduled_timestamp)
                 preempted_reqs.append(preempted_req)
                 if preempted_req == request:
                     # No more request to preempt. Cannot schedule this request.
