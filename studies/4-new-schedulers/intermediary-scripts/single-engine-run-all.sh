@@ -14,6 +14,7 @@ export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/schedul
 GIT_ROOT_PATH=$(git rev-parse --show-toplevel)
 
 OUTPUTS_PATH=./vllm_outputs
+TMP_OUTPUTS_PATH=/tmp
 #rm -rf $OUTPUTS_PATH
 mkdir -p $OUTPUTS_PATH
 
@@ -40,13 +41,13 @@ KV_MEM_PARAM="--gpu-memory-utilization $KV_MEM"
 
 # Base LLM params
 MAX_MODEL_LEN_PARAM="--max-model-len 2000"
-MNS_PARAM="--max-num-seqs 30"
+MNS_PARAM="--max-num-seqs 1"
 TP_PARAM="--tensor-parallel-size 1"
 
 BASE_FILENAME=${MODEL_NAME}-${SCHEDULER}-offld${OFFLOADING}-kvmem${KV_MEM}
 SERVER_FILENAME=vllm-${BASE_FILENAME}.log
 
-vllm serve $MODEL --host localhost --port 8000 $KV_MEM_PARAM $MAX_MODEL_LEN_PARAM $MNS_PARAM $TP_PARAM $OFFLOADING_PARAM $SCHEDULER_PARAM --disable-hybrid-kv-cache-manager >$OUTPUTS_PATH/$SERVER_FILENAME 2>&1 & SERVER_PID=$!
+vllm serve $MODEL --host localhost --port 8000 $KV_MEM_PARAM $MAX_MODEL_LEN_PARAM $MNS_PARAM $TP_PARAM $OFFLOADING_PARAM $SCHEDULER_PARAM --disable-hybrid-kv-cache-manager >$TMP_OUTPUTS_PATH/$SERVER_FILENAME 2>&1 & SERVER_PID=$!
 
 # Wait for server start
 python3 $GIT_ROOT_PATH/util/wait_vllm.py
@@ -60,12 +61,12 @@ conda activate $GIT_ROOT_PATH/envs/vllm-0.9.2
 set -x
 
 DO_THROUGHPUT=1
-DO_SHARE=1
+DO_SHARE=0
 
-NUM_PROMPTS=30
+NUM_PROMPTS=10
 REQUEST_RATE=999
 BURSTNESS=1
-MAX_CONCUR=200
+MAX_CONCUR=600
 
 BENCHMARK_PATH=$GIT_ROOT_PATH/../vllm/benchmarks
 DATASET_PATH=$GIT_ROOT_PATH/datasets
@@ -94,7 +95,7 @@ SHARE_FILENAME="res-$BASE_FILENAME-share.json"
 python3 $BENCHMARK_PATH/benchmark_serving.py \
         --base-url http://localhost:8000 \
         --backend vllm --model $MODEL \
-	--num-prompts $(( 10 * $NUM_PROMPTS )) \
+	--num-prompts $(( 4 * $NUM_PROMPTS )) \
         --dataset-name sharegpt \
         --dataset-path $GIT_ROOT_PATH/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
         --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
@@ -111,5 +112,6 @@ kill -s TERM $SERVER_PID
 wait $SERVER_PID
 set -e
 
+cp $TMP_OUTPUTS_PATH/$SERVER_FILENAME $OUTPUTS_PATH/$SERVER_FILENAME
 
 

@@ -10,13 +10,13 @@ export PYTHONPATH="$GIT_ROOT_PATH/schedulers/:$PYTHONPATH"
 MODELS_BASE_PATH=/snfs1/llm-models
 
 MODELS=( "llama-3.2-3B-Instruct" )
-#SCHEDULERS=( rr.Scheduler )  # RR
-SCHEDULERS=( none fcfs.Scheduler rr.Scheduler )  # RR
-#SCHEDULERS=( none )  # RR
-#OFFLOADING=( none 5 20 )
-OFFLOADING=( none 4 20 )
-KV_MEM=( 0.3 0.95 ) # RTX 3090 MNS 30
-#KV_MEM=( 0.3 )
+SCHEDULERS=( rr-v2.Scheduler )  # RR
+#SCHEDULERS=( fcfs.Scheduler )
+#SCHEDULERS=( none )
+#OFFLOADING=( none 4 20 )
+OFFLOADING=( 4 )
+#KV_MEM=( 0.3 0.95 ) # RTX 3090 MNS 30
+KV_MEM=( 0.3 )
 #KV_MEM=( 0.29 0.95 ) # RTX 3090
 #KV_MEM=( 0.95 ) # RTX 3090
 

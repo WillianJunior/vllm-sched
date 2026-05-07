@@ -256,7 +256,7 @@ class Scheduler(Scheduler):
         if self.lora_config and request.lora_request and request.lora_request.lora_int_id > 0:
             scheduled_loras.add(request.lora_request.lora_int_id)
         
-        print(f"[rr][running] scheduled")
+        print(f"[rr][running] scheduled, cur_time={request.cur_time}")
         return token_budget, encoder_compute_budget, True, True
 
     def _prepare_waiting_remote_kvs(self, request, skipped_waiting_requests):
@@ -341,8 +341,23 @@ class Scheduler(Scheduler):
 
         # Assemble all requests in a single queue
         all_reqs_queue = []
-        all_reqs_queue.extend(self.running)
-        all_reqs_queue.extend(self.waiting)
+        #all_reqs_queue.extend(self.running)
+        def smaller_runtime_comparator(lhs, rhs):
+            return lhs.cur_time - rhs.cur_time
+        cur_waiting = []
+        cur_waiting.extend(self.waiting)
+        #cur_waiting.sort(key=cmp_to_key(smaller_runtime_comparator))
+        #all_reqs_queue.extend(cur_waiting)
+
+        for req in self.running:
+            if req.cur_time > self.quantum:
+                cur_waiting.append(req)
+            else:
+                all_reqs_queue.append(req)
+
+        cur_waiting.sort(key=cmp_to_key(smaller_runtime_comparator))
+        all_reqs_queue.extend(cur_waiting)
+
 
         if False: # just disable printing
             print("[rr] self.waiting:")
@@ -364,21 +379,29 @@ class Scheduler(Scheduler):
         # for req in all_reqs_queue:
         #     req.should_sched = False
 
+        #def smaller_runtime_comparator(lhs, rhs):
+        #    return lhs.cur_time - rhs.cur_time
+        #all_reqs_queue.sort(key=cmp_to_key(smaller_runtime_comparator))
+
         # First, sort all requests acording to the priority metric
         # for rr: O(n), just move all quantumd reqs to the end...
         # This is inefficient: waiting are never quantumd...
-        req_index = 0
-        req_unchecked_len = len(all_reqs_queue)
-        while req_index < req_unchecked_len:
-            request = all_reqs_queue[req_index]
-            if request.cur_time > self.quantum:
-                request = all_reqs_queue.pop(req_index)
-                all_reqs_queue.append(request)
+        #req_index = 0
+        #req_unchecked_len = len(all_reqs_queue)
+        #while req_index < req_unchecked_len:
+        #    request = all_reqs_queue[req_index]
+        #    if request.cur_time > self.quantum:
+        #        request = all_reqs_queue.pop(req_index)
+        #        all_reqs_queue.append(request)
+        #
+        #        # Don't need to check reqs which were quantumd
+        #        req_unchecked_len -= 1
+        #    else:
+        #        req_index += 1
 
-                # Don't need to check reqs which were quantumd
-                req_unchecked_len -= 1
-            else:
-                req_index += 1
+        print(f"[rr] sorted queue:")
+        for r in all_reqs_queue:
+            print(f"\t{r.request_id} cur_time={r.cur_time}")
 
         # All states used:
         # RequestStatus.RUNNING
@@ -647,10 +670,20 @@ class Scheduler(Scheduler):
                 # run, as the were already consumed away from all_reqs_queue.
                 while all_reqs_queue:
                     preempted_req = all_reqs_queue.pop()
+                    print(f"----can preempt {preempted_req.request_id}? status={preempted_req.status}")
+                    if False:
+                        for k, v in preempted_req.__dict__.items():
+                            if 'all_token_ids' in k or 'prompt_token_ids' in k or 'block_hashes' == k or 'output_token_ids' in k:
+                                print(f"\t===={k}: len={len(v)}")
+                            else:                
+                                print(f"\t===={k}: {v}")
                     if preempted_req.num_computed_tokens > 0:
                         # If num_computed_token=0, then this is a new
                         # request. Cannot preempt it. Just ignore
                         break
+                
+                if preempted_req:
+                    print(f"----trying to preempt {preempted_req.request_id}")
 
                 if not all_reqs_queue and preempted_req.num_computed_tokens == 0:
                     # No other valid requests to preempt. Not enough kv blocks.
@@ -740,11 +773,12 @@ class Scheduler(Scheduler):
                 # If loading async, allocate memory and put request
                 # into the WAITING_FOR_REMOTE_KV state.
                 print(f"[rr][waiting][before_append_running] load_kv_async")
-                skipped_waiting_requests.prepend_request(request)
+                #skipped_waiting_requests.prepend_request(request)
+                self.waiting.append(request)
                 request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
                 continue
 
-            print(f"[rr][waiting] scheduling {request_id}")
+            print(f"[rr][waiting] scheduling {request_id}, cur_time={request.cur_time}")
             num_sched_reqs += 1
 
             self.running.append(request)
@@ -830,6 +864,8 @@ class Scheduler(Scheduler):
 
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
+        if len(self.waiting) > 0:
+            assert len(self.running) > 0
         # Since some requests in the RUNNING queue may not be scheduled in
         # this step, the total number of scheduled requests can be smaller than
         # len(self.running).
@@ -953,6 +989,7 @@ class Scheduler(Scheduler):
         #assert request.status == RequestStatus.RUNNING, (
         #    "Only running requests can be preempted"
         #)
+        print(f"[rr][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() before: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         #was_waiting = request.status == RequestStatus.WAITING
@@ -967,6 +1004,7 @@ class Scheduler(Scheduler):
         is_RR = True
 
         print(f"[rr] preemption: {request.request_id}")
+        print(f"[rr][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
 
         if is_RR:
             # Reset current running time

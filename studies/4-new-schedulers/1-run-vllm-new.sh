@@ -8,8 +8,8 @@ export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/schedul
 
 MNS=20
 SCHED=""
-#SCHED="--scheduler-cls $1"
-#OFFLOADING="--kv-offloading-size 20"
+SCHED="--scheduler-cls $1"
+OFFLOADING="--kv-offloading-size 4"
 
 # For 6 reqs:
 # mem for 4090: 0.28
