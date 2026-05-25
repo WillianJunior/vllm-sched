@@ -204,10 +204,10 @@ class Scheduler(Scheduler):
                     # Skiping this request
                     continue
 
-                    can_schedule_request, new_blocks = self._try_sched_waiting(
-                        request, scheduled_loras, token_budget, 
-                        encoder_compute_budget, scheduled_encoder_inputs, 
-                        preempted_reqs)
+                can_schedule_request, new_blocks, load_kv_async = self._try_sched_waiting(
+                    request, scheduled_loras, token_budget, 
+                    encoder_compute_budget, scheduled_encoder_inputs, 
+                    preempted_reqs)
 
                 if can_schedule_request and load_kv_async:
                     # If loading async, memory was allocated.
@@ -221,7 +221,7 @@ class Scheduler(Scheduler):
 
                     continue
 
-                # Here are behaviors unique to running, vs waiting.
+                # Here are behaviors unique to waiting, compared to running.
                 # Ideally, this should be empty
                 if can_schedule_request:
                     self.waiting.remove(request)
@@ -279,11 +279,148 @@ class Scheduler(Scheduler):
                         self.ec_connector.update_state_after_alloc(request, i)
 
         if all_reqs_queue:
-            # If there are still requests in the queue, the batch should full
-            assert num_sched_reqs >= self.max_num_running_reqs or token_budget <= 0
+            # If there are still requests in the queue, the batch should be full
+            assert num_sched_reqs == self.max_num_running_reqs or token_budget == 0
+
+        
+        # There may be requests in all_reqs_queue which were running but the budget is spent
+        for request in all_reqs_queue:
+            if request.status == RequestStatus.RUNNING:
+                print(f"[rr][prep_output] req {request.request_id} was running, not anymore...")
+                request.status = RequestStatus.WAITING
+                assert request not in self.waiting
+                self.waiting.append(request)
+                self.running.remove(request)
+                assert len(self.waiting) == len(set(self.waiting)) # expensive... remove later
+
+        print(f"[rr][prep_output] running: {len(self.running)}, waiting: {len(self.waiting)}")
+
+        assert len(self.waiting) == len(set(self.waiting)) # expensive... remove later
+        assert len(self.running) == len(set(self.running)) # expensive... remove later
 
         # ===========================================================
         # Priority queue consumed. All schedulable reqs were scheduled
+
+        if self.lora_config:
+            assert len(scheduled_loras) <= self.lora_config.max_loras
+
+        # Check if the scheduling constraints are satisfied.
+        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+        assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
+
+        assert token_budget >= 0
+        assert len(self.running) <= self.max_num_running_reqs
+        if len(self.waiting) > 0:
+            assert len(self.running) > 0
+        # Since some requests in the RUNNING queue may not be scheduled in
+        # this step, the total number of scheduled requests can be smaller than
+        # len(self.running).
+        assert len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
+            scheduled_running_reqs
+        ) <= self.max_num_running_reqs
+
+        # Get the longest common prefix among all requests in the running queue.
+        # This can be potentially used for cascade attention.
+        num_common_prefix_blocks = [0] * len(self.kv_cache_config.kv_cache_groups)
+        with record_function_or_nullcontext("schedule: get_num_common_prefix_blocks"):
+            if self.running:
+                any_request_id = self.running[0].request_id
+                num_common_prefix_blocks = (
+                    self.kv_cache_manager.get_num_common_prefix_blocks(any_request_id)
+                )
+
+        # Construct the scheduler output.
+        if self.use_v2_model_runner:
+            scheduled_new_reqs = scheduled_new_reqs + scheduled_resumed_reqs
+            scheduled_resumed_reqs = []
+            new_reqs_data = [
+                NewRequestData.from_request(
+                    req,
+                    req_to_new_blocks[req.request_id].get_block_ids(),
+                    req._all_token_ids,
+                )
+                for req in scheduled_new_reqs
+            ]
+        else:
+            new_reqs_data = [
+                NewRequestData.from_request(
+                    req, req_to_new_blocks[req.request_id].get_block_ids()
+                )
+                for req in scheduled_new_reqs
+            ]
+
+        if False: # just disable the prints
+            print(f"[rr][cached_reqs] sched_running:")
+            for r in scheduled_running_reqs:
+                print(f"\t{r.request_id}")
+            print(f"[rr][cached_reqs] sched_resumed:")
+            for r in scheduled_resumed_reqs:
+                print(f"\t{r.request_id}")
+
+            print(f"[rr][cached_reqs] waiting")
+            for r in self.waiting:
+                print(f"\t{r.request_id}")
+
+            print(f"[rr][cached_reqs] running:")
+            for r in self.running:
+                print(f"\t{r.request_id}")
+
+        with record_function_or_nullcontext("schedule: make_cached_request_data"):
+            cached_reqs_data = self._make_cached_request_data(
+                scheduled_running_reqs,
+                scheduled_resumed_reqs,
+                num_scheduled_tokens,
+                scheduled_spec_decode_tokens,
+                req_to_new_blocks,
+            )
+
+        # TODO: WAS INN PREVIOUS CODE, BUT REMOVED. IT IS NECESSARY?
+        # # Record the request ids that were scheduled in this step.
+        # self.prev_step_scheduled_req_ids.clear()
+        # self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
+
+        scheduler_output = SchedulerOutput(
+            scheduled_new_reqs=new_reqs_data,
+            scheduled_cached_reqs=cached_reqs_data,
+            num_scheduled_tokens=num_scheduled_tokens,
+            total_num_scheduled_tokens=total_num_scheduled_tokens,
+            scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
+            scheduled_encoder_inputs=scheduled_encoder_inputs,
+            num_common_prefix_blocks=num_common_prefix_blocks,
+            preempted_req_ids={req.request_id for req in preempted_reqs},
+            # finished_req_ids is an existing state in the scheduler,
+            # instead of being newly scheduled in this step.
+            # It contains the request IDs that are finished in between
+            # the previous and the current steps.
+            finished_req_ids=self.finished_req_ids,
+            free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
+        )
+
+        # NOTE(Kuntai): this function is designed for multiple purposes:
+        # 1. Plan the KV cache store
+        # 2. Wrap up all the KV cache load / save ops into an opaque object
+        # 3. Clear the internal states of the connector
+        if self.connector is not None:
+            meta: KVConnectorMetadata = self.connector.build_connector_meta(
+                scheduler_output
+            )
+            scheduler_output.kv_connector_metadata = meta
+
+        # Build the connector meta for ECConnector
+        if self.ec_connector is not None:
+            ec_meta: ECConnectorMetadata = self.ec_connector.build_connector_meta(
+                scheduler_output
+            )
+            scheduler_output.ec_connector_metadata = ec_meta
+
+        with record_function_or_nullcontext("schedule: update_after_schedule"):
+            self._update_after_schedule(scheduler_output)
+
+        print(f"[rr] sched_time {time.monotonic() - scheduled_timestamp}")
+
+        #print(f"[rr] done scheduling")
+        return scheduler_output
+        
 
     def _try_sched_running(self, request, requests_queue, preempted_reqs, 
             token_budget, encoder_compute_budget, scheduled_encoder_inputs):
@@ -394,6 +531,8 @@ class Scheduler(Scheduler):
         request_id = request.request_id
         did_alloc = False
         new_blocks = None
+        load_kv_async = False
+
 
         # TODO: this was in the previous code, but i removed
         # check if no issues...
@@ -410,14 +549,13 @@ class Scheduler(Scheduler):
             )
         ):
             # Scheduling would exceed max_loras, skip.
-            return did_schedule, new_blocks
+            return did_schedule, new_blocks, load_kv_async
 
         # =======================================================
         # Attempting kv cache load.
         # Can be reuse, or load from elsewhere
 
         num_external_computed_tokens = 0
-        load_kv_async = False
         connector_prefix_cache_queries, connector_prefix_cache_hits = 0, 0
 
         # Get already-cached tokens.
@@ -499,7 +637,7 @@ class Scheduler(Scheduler):
                 print(f"[rr][_try_sched_waiting] pooling/chunked preffil break")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
-                return did_schedule, new_blocks
+                return did_schedule, new_blocks, load_kv_async
             
             num_new_tokens = min(num_new_tokens, token_budget)
             assert num_new_tokens > 0
@@ -523,7 +661,7 @@ class Scheduler(Scheduler):
                     print(f"[rr][_try_sched_waiting] encoder: num_new_tokens == 0")
                     # TODO: When does this happens? This ended scheduling in FCFS
                     raise Exception("This ended scheduling in FCFS...")
-                    return did_schedule, new_blocks
+                    return did_schedule, new_blocks, load_kv_async
 
         if self.need_mamba_block_aligned_split:
             num_new_tokens = self._mamba_block_aligned_split(
@@ -536,7 +674,7 @@ class Scheduler(Scheduler):
                 print(f"[rr][_try_sched_waiting] mamba: num_new_tokens == 0")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
-                return did_schedule, new_blocks
+                return did_schedule, new_blocks, load_kv_async
 
         # Handles an edge case when P/D Disaggregation
         # is used with Spec Decoding where an
@@ -562,7 +700,7 @@ class Scheduler(Scheduler):
 
         if did_alloc:
             did_schedule = True
-        return did_schedule, new_blocks
+        return did_schedule, new_blocks, load_kv_async
 
 
     def _try_allocate_kv_blocks(self, request, requests_queue, num_new_tokens, 
@@ -599,8 +737,11 @@ class Scheduler(Scheduler):
                     if preempted_req.num_computed_tokens > 0:
                         print(f"----can preempt {preempted_req.request_id}")
                         break
+                    else:
+                        # Cannot preempt a req which is not in memory
+                        preempted_req = None
 
-                if not requests_queue or preempted_req.num_computed_tokens == 0:
+                if not requests_queue:
                     # No other valid requests to preempt. Not enough kv blocks.
                     print("[rr][_try_allocate_kv_blocks] cannot preempt to allocate blocks")
                     break
@@ -639,8 +780,6 @@ class Scheduler(Scheduler):
             return False, encoder_compute_budget, None
 
 
-    TODO!!!!! verificar como funciona a movimentação de reqs quando tem preempção
-    Ex: running->waiting? waiting(inmem)->waiting(preempted)
     def _preempt_request(self, request: Request, timestamp: float) -> None:
         """Preempt a request and put it back to the waiting queue.
 
@@ -655,7 +794,6 @@ class Scheduler(Scheduler):
         print(f"[rr][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() before: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
-        #was_waiting = request.status == RequestStatus.WAITING
         request.status = RequestStatus.PREEMPTED
         request.num_computed_tokens = 0
         if request.spec_token_ids:
@@ -663,22 +801,8 @@ class Scheduler(Scheduler):
         request.num_preemptions += 1
         if self.log_stats:
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
-
-        is_RR = True
+        request.cur_time = 0
 
         print(f"[rr] preemption: {request.request_id}")
         print(f"[rr][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
 
-        if is_RR:
-            # Reset current running time
-            request.cur_time = 0
-
-            # Will: for RR, reinsert in the back instead of prepending
-            # Will: can preempt waiting reqs which were in-mem, but not running.
-            # No need to add them again to self.waiting.
-            #if not was_waiting:
-            #    self.waiting.append(request) # no longer reinsert to waiting. caller must choose where to reinsert...
-            #assert len(self.waiting) == len(set(self.waiting))
-        else:
-            # Put the request back to the waiting queue.
-            self.waiting.prepend_request(request)
