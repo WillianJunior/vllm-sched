@@ -20,6 +20,9 @@ from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
+from vllm.v1.core.sched.output import KVConnectorMetadata, ECConnectorMetadata
+
+from typing import Any
 
 logger = init_logger(__name__)
 
@@ -59,7 +62,7 @@ class Scheduler(Scheduler):
         # This only skips the self.waiting.pop(req).
         setattr(Request, "was_waiting_remote_kvs", False)
 
-     def schedule(self) -> SchedulerOutput:
+    def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -107,7 +110,7 @@ class Scheduler(Scheduler):
         remaining_reqs = []
         req_idx = 0
         for request in self.running:
-            if self._can_preempt(request):
+            if request.cur_time >= self.quantum:
                 remaining_reqs.append(request)
             else:
                 all_reqs_queue.append(request)
@@ -116,7 +119,7 @@ class Scheduler(Scheduler):
         # E.g., KV, encoder, FSM, ...
         # Assumption: self.waiting is ordered by priority
         for request in self.waiting:
-            if request.state == RequestStatus.WAITING:
+            if request.status == RequestStatus.WAITING:
                 remaining_reqs.append(request)
             else:
                 all_reqs_queue.append(request)
@@ -139,8 +142,8 @@ class Scheduler(Scheduler):
             print(f"[rr][all_reqs_queue] trying req {request_id}, {len(all_reqs_queue)} remaining in the queue, num_sched_reqs={num_sched_reqs}")
 
             if request.status == RequestStatus.RUNNING:
-                can_schedule_request, new_blocks = self._try_sched_running(
-                    request, requests_queue, preempted_reqs, token_budget, 
+                can_schedule_request, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input = self._try_sched_running(
+                    request, all_reqs_queue, preempted_reqs, token_budget, 
                     encoder_compute_budget, scheduled_encoder_inputs)
                 
                 # Here are behaviors unique to running, vs waiting.
@@ -204,10 +207,9 @@ class Scheduler(Scheduler):
                     # Skiping this request
                     continue
 
-                can_schedule_request, new_blocks, load_kv_async = self._try_sched_waiting(
-                    request, scheduled_loras, token_budget, 
-                    encoder_compute_budget, scheduled_encoder_inputs, 
-                    preempted_reqs)
+                can_schedule_request, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input = self._try_sched_waiting(
+                    request, all_reqs_queue, scheduled_loras, token_budget, 
+                    encoder_compute_budget, scheduled_encoder_inputs, preempted_reqs)
 
                 if can_schedule_request and load_kv_async:
                     # If loading async, memory was allocated.
@@ -426,10 +428,15 @@ class Scheduler(Scheduler):
             token_budget, encoder_compute_budget, scheduled_encoder_inputs):
 
         # Returns:
-        # did_schedule, new_blocks
+        # did_schedule, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
         # did_schedule=False if there is not enough mem for request
 
         request_id = request.request_id
+        
+        encoder_inputs_to_schedule = None
+        new_encoder_compute_budget = encoder_compute_budget
+        external_load_encoder_input = []
+        
         print(f"[rr][running] trying {request.request_id}")
         assert len(self.waiting) == len(set(self.waiting))
 
@@ -452,7 +459,7 @@ class Scheduler(Scheduler):
             # Request was already removed from the queue and still is
             # in self.running
             # return token_budget, encoder_compute_budget, False, True
-            return False, new_blocks
+            return False, new_blocks, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
         num_new_tokens = (
             request.num_tokens_with_spec
@@ -508,21 +515,21 @@ class Scheduler(Scheduler):
             # we do not strictly follow the FCFS scheduling policy and
             # allow the lower-priority requests to be scheduled.
             print(f"[rr][running] num_new_tokens == 0")
-            return False, new_blocks
+            return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
         # === 2. KV blocks scheduling ===============================
-        did_allocated_kv_block, encoder_compute_budget, new_blocks = _try_allocate_kv_blocks(
+        did_allocated_kv_block, encoder_compute_budget, new_blocks = self._try_allocate_kv_blocks(
             request, requests_queue, num_new_tokens, 
             scheduled_encoder_inputs, encoder_compute_budget, 
             preempted_reqs, self.num_lookahead_tokens)
         
         if new_blocks:
             print(f"[rr][running] can schedule {request_id}, cur_time={request.cur_time}")
-            return True, new_blocks
+            return True, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
         else:
-            return False, None
+            return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
-    def _try_sched_waiting(self, request, scheduled_loras, token_budget, 
+    def _try_sched_waiting(self, request, requests_queue, scheduled_loras, token_budget, 
         encoder_compute_budget, scheduled_encoder_inputs, preempted_reqs):
 
         # Returns:
@@ -530,9 +537,12 @@ class Scheduler(Scheduler):
 
         request_id = request.request_id
         did_alloc = False
+        did_schedule = False
         new_blocks = None
         load_kv_async = False
-
+        num_computed_tokens = 0
+        encoder_inputs_to_schedule = None
+        external_load_encoder_input = []
 
         # TODO: this was in the previous code, but i removed
         # check if no issues...
@@ -549,7 +559,7 @@ class Scheduler(Scheduler):
             )
         ):
             # Scheduling would exceed max_loras, skip.
-            return did_schedule, new_blocks, load_kv_async
+            return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
         # =======================================================
         # Attempting kv cache load.
@@ -581,7 +591,7 @@ class Scheduler(Scheduler):
                     #self.waiting.pop_request()
                     #will #self.waiting.remove(request)
                     #skipped_waiting_requests.prepend_request(request)
-                    continue
+                    return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
                 request.num_external_computed_tokens = ext_tokens
                 num_external_computed_tokens = ext_tokens
@@ -637,7 +647,7 @@ class Scheduler(Scheduler):
                 print(f"[rr][_try_sched_waiting] pooling/chunked preffil break")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
-                return did_schedule, new_blocks, load_kv_async
+                return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
             
             num_new_tokens = min(num_new_tokens, token_budget)
             assert num_new_tokens > 0
@@ -661,7 +671,7 @@ class Scheduler(Scheduler):
                     print(f"[rr][_try_sched_waiting] encoder: num_new_tokens == 0")
                     # TODO: When does this happens? This ended scheduling in FCFS
                     raise Exception("This ended scheduling in FCFS...")
-                    return did_schedule, new_blocks, load_kv_async
+                    return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
         if self.need_mamba_block_aligned_split:
             num_new_tokens = self._mamba_block_aligned_split(
@@ -674,7 +684,7 @@ class Scheduler(Scheduler):
                 print(f"[rr][_try_sched_waiting] mamba: num_new_tokens == 0")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
-                return did_schedule, new_blocks, load_kv_async
+                return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
         # Handles an edge case when P/D Disaggregation
         # is used with Spec Decoding where an
@@ -691,7 +701,7 @@ class Scheduler(Scheduler):
             else 0
         )
 
-        did_alloc, encoder_compute_budget, new_blocks = _try_allocate_kv_blocks(
+        did_alloc, encoder_compute_budget, new_blocks = self._try_allocate_kv_blocks(
             request, requests_queue, num_new_tokens, 
             scheduled_encoder_inputs, encoder_compute_budget, preempted_reqs, 
             effective_lookahead_tokens, num_new_local_computed_tokens, 
@@ -700,13 +710,20 @@ class Scheduler(Scheduler):
 
         if did_alloc:
             did_schedule = True
-        return did_schedule, new_blocks, load_kv_async
+            
+            if self.connector is not None:
+                self.connector.update_state_after_alloc(
+                    request,
+                    self.kv_cache_manager.get_blocks(request_id),
+                    num_external_computed_tokens,
+                )
 
+        return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
     def _try_allocate_kv_blocks(self, request, requests_queue, num_new_tokens, 
             scheduled_encoder_inputs, encoder_compute_budget, preempted_reqs, 
             num_lookahead_tokens, num_new_computed_tokens=0, 
-            new_computed_blocks=0, num_external_computed_tokens=0, 
+            new_computed_blocks=None, num_external_computed_tokens=0, 
             delay_cache_blocks=False, num_encoder_tokens=0):
         # Returns:
         # did_alloc, encoder_compute_budget, new_blocks
@@ -765,7 +782,7 @@ class Scheduler(Scheduler):
                 if preempted_req.status == RequestStatus.RUNNING:
                     self.running.remove(preempted_req)
                     self.waiting.append(preempted_req)
-                self._preempt_request(preempted_req, scheduled_timestamp)
+                self._preempt_request(preempted_req, time.monotonic())
                 preempted_reqs.append(preempted_req)
                 
                 # If the request cannot run, and is the victim for preemption,
