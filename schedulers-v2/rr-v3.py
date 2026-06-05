@@ -168,7 +168,13 @@ class Scheduler(Scheduler):
                         # New spec tokens will be set in `update_draft_token_ids` before the
                         # next step when applicable.
                         request.spec_token_ids = []
-                    
+                        
+                elif num_new_tokens == 0:
+                    num_sched_reqs += 1
+                
+                else:
+                    all_reqs_queue.insert(0, request)
+                    break
             else:
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
                     print(f"[rr] waiting is wait remote kvs")
@@ -288,11 +294,15 @@ class Scheduler(Scheduler):
         # There may be requests in all_reqs_queue which were running but the budget is spent
         for request in all_reqs_queue:
             if request.status == RequestStatus.RUNNING:
-                print(f"[rr][prep_output] req {request.request_id} was running, not anymore...")
-                request.status = RequestStatus.WAITING
+                print(f"[rr][prep_output] req {request.request_id} was running, not anymore...")                
+                
+                self.running.remove(request)
+                self._preempt_request(request, time.monotonic())
+                preempted_reqs.append(request)
+                
                 assert request not in self.waiting
                 self.waiting.append(request)
-                self.running.remove(request)
+                
                 assert len(self.waiting) == len(set(self.waiting)) # expensive... remove later
 
         print(f"[rr][prep_output] running: {len(self.running)}, waiting: {len(self.waiting)}")
@@ -523,7 +533,7 @@ class Scheduler(Scheduler):
             scheduled_encoder_inputs, encoder_compute_budget, 
             preempted_reqs, self.num_lookahead_tokens)
         
-        if new_blocks:
+        if new_blocks is not None:
             print(f"[rr][running] can schedule {request_id}, cur_time={request.cur_time}")
             return True, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
         else:
