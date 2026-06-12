@@ -48,7 +48,7 @@ JSON_FLAGS="--save-result --result-dir $OUTPUTS_PATH --save-detailed"
 curl -X POST "http://localhost:8000/reset_prefix_cache"
 
 if [ "$DO_THROUGHPUT" = "1" ]; then
-THOUGHPUT_FILENAME="res-$BASE_FILENAME-throughput.json"
+BENCH_FILENAME="res-$BASE_FILENAME-throughput.json"
 python3 $BENCHMARK_PATH/benchmark_serving.py \
         --base-url http://localhost:8000 \
         --backend vllm --model $MODEL \
@@ -58,11 +58,11 @@ python3 $BENCHMARK_PATH/benchmark_serving.py \
         --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
         --max-concurrency $MAX_CONCUR \
         --random-input-len 1 --random-output-len 1200 --ignore-eos \
-	$JSON_FLAGS --result-filename $THOUGHPUT_FILENAME
+	$JSON_FLAGS --result-filename $BENCH_FILENAME
 fi
 
 if [ "$DO_SHARE" = "1" ]; then
-SHARE_FILENAME="res-$BASE_FILENAME-share.json"
+BENCH_FILENAME="res-$BASE_FILENAME-share.json"
 python3 $BENCHMARK_PATH/benchmark_serving.py \
         --base-url http://localhost:8000 \
         --backend vllm --model $MODEL \
@@ -72,7 +72,7 @@ python3 $BENCHMARK_PATH/benchmark_serving.py \
         --percentile-metrics ttft,tpot,itl,e2el --metric-percentiles 50,75,90,99 \
         --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
         --max-concurrency $MAX_CONCUR \
-	$JSON_FLAGS --result-filename $SHARE_FILENAME
+	$JSON_FLAGS --result-filename $BENCH_FILENAME
 fi
 
 
