@@ -217,7 +217,9 @@ class Scheduler(Scheduler):
                     request, all_reqs_queue, scheduled_loras, token_budget, 
                     encoder_compute_budget, scheduled_encoder_inputs, preempted_reqs)
 
+                print(f"[rr][{request_id}] can_schedule_request: {can_schedule_request}, load_kv_async: {load_kv_async}")
                 if can_schedule_request and load_kv_async:
+                    print(f"[rr][{request_id}] need to wait remote KVS")
                     # If loading async, memory was allocated.
                     # Now need to wait for loading.
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
@@ -387,9 +389,9 @@ class Scheduler(Scheduler):
             )
 
         # TODO: WAS INN PREVIOUS CODE, BUT REMOVED. IT IS NECESSARY?
-        # # Record the request ids that were scheduled in this step.
-        # self.prev_step_scheduled_req_ids.clear()
-        # self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
+        # Record the request ids that were scheduled in this step.
+        self.prev_step_scheduled_req_ids.clear()
+        self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
 
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
@@ -469,6 +471,7 @@ class Scheduler(Scheduler):
             # Request was already removed from the queue and still is
             # in self.running
             # return token_budget, encoder_compute_budget, False, True
+            print(f"[rr][running] request.num_output_placeholders>0 for {request_id}")
             return False, new_blocks, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
         num_new_tokens = (
@@ -524,19 +527,22 @@ class Scheduler(Scheduler):
             # NOTE(woosuk): Here, by doing `continue` instead of `break`,
             # we do not strictly follow the FCFS scheduling policy and
             # allow the lower-priority requests to be scheduled.
-            print(f"[rr][running] num_new_tokens == 0")
-            return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
+            print(f"[rr][running] req {request_id} num_new_tokens == 0")
+
+            return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
+        
         # === 2. KV blocks scheduling ===============================
         did_allocated_kv_block, encoder_compute_budget, new_blocks = self._try_allocate_kv_blocks(
             request, requests_queue, num_new_tokens, 
             scheduled_encoder_inputs, encoder_compute_budget, 
             preempted_reqs, self.num_lookahead_tokens)
-        
+
         if new_blocks is not None:
             print(f"[rr][running] can schedule {request_id}, cur_time={request.cur_time}")
             return True, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
         else:
+            print(f"[rr][running] cannot schedule {request_id} because new_blocks is none")
             return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
     def _try_sched_waiting(self, request, requests_queue, scheduled_loras, token_budget, 
@@ -580,11 +586,13 @@ class Scheduler(Scheduler):
 
         # Get already-cached tokens.
         if request.num_computed_tokens == 0:
-            print(f"[rr][_try_sched_waiting][kv_load] getting cached tokens")
+            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] getting cached tokens")
             # Get locally-cached tokens.
             new_computed_blocks, num_new_local_computed_tokens = (
                 self.kv_cache_manager.get_computed_blocks(request)
             )
+            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] new_computed_blocks={new_computed_blocks}")
+            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] num_new_local_computed_tokens={num_new_local_computed_tokens}")
 
             # Get externally-cached tokens if using a KVConnector.
             if self.connector is not None:
@@ -593,6 +601,7 @@ class Scheduler(Scheduler):
                         request, num_new_local_computed_tokens
                     )
                 )
+                print(f"[rr][_try_sched_waiting][kv_load][{request_id}] have connector. ext_tokens={ext_tokens}, load_kv_async={load_kv_async}")
 
                 if ext_tokens is None:
                     # The request cannot be scheduled because
@@ -601,6 +610,7 @@ class Scheduler(Scheduler):
                     #self.waiting.pop_request()
                     #will #self.waiting.remove(request)
                     #skipped_waiting_requests.prepend_request(request)
+                    print(f"[rr][_try_sched_waiting][kv_load][{request_id}] ext_tokens is None")
                     return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
                 request.num_external_computed_tokens = ext_tokens
@@ -615,8 +625,9 @@ class Scheduler(Scheduler):
             num_computed_tokens = (
                 num_new_local_computed_tokens + num_external_computed_tokens
             )
+            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] final prefix: num_computed_tokens={num_computed_tokens}, num_new_local_computed_tokens={num_new_local_computed_tokens}, num_external_computed_tokens={num_external_computed_tokens}, connector_prefix_cache_queries={connector_prefix_cache_queries}")
         else:
-            print(f"[rr][_try_sched_waiting][kv_load] no cached tokens")
+            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] no cached tokens")
             # KVTransfer: WAITING reqs have num_computed_tokens > 0
             # after async KV recvs are completed.
             new_computed_blocks = self.kv_cache_manager.empty_kv_cache_blocks
@@ -632,11 +643,11 @@ class Scheduler(Scheduler):
 
         if load_kv_async:
             # KVTransfer: loading remote KV, do not allocate for new work.
-            print(f"[rr][_try_sched_waiting] load_kv_async")
+            print(f"[rr][_try_sched_waiting][{request_id}] load_kv_async")
             assert num_external_computed_tokens > 0
             num_new_tokens = 0
         else:
-            print(f"[rr][_try_sched_waiting] no need for load_kv_async")
+            print(f"[rr][_try_sched_waiting][{request_id}] no need for load_kv_async")
             # Number of tokens to be scheduled.
             # We use `request.num_tokens` instead of
             # `request.num_prompt_tokens` to consider the resumed
@@ -654,7 +665,7 @@ class Scheduler(Scheduler):
             ):
                 # If chunked_prefill is disabled,
                 # we can stop the scheduling here.
-                print(f"[rr][_try_sched_waiting] pooling/chunked preffil break")
+                print(f"[rr][_try_sched_waiting][{request_id}] pooling/chunked preffil break")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
                 return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
@@ -678,7 +689,7 @@ class Scheduler(Scheduler):
                 )
                 if num_new_tokens == 0:
                     # The request cannot be scheduled.
-                    print(f"[rr][_try_sched_waiting] encoder: num_new_tokens == 0")
+                    print(f"[rr][_try_sched_waiting][{request_id}] encoder: num_new_tokens == 0")
                     # TODO: When does this happens? This ended scheduling in FCFS
                     raise Exception("This ended scheduling in FCFS...")
                     return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
@@ -691,7 +702,7 @@ class Scheduler(Scheduler):
                 num_external_computed_tokens,
             )
             if num_new_tokens == 0:
-                print(f"[rr][_try_sched_waiting] mamba: num_new_tokens == 0")
+                print(f"[rr][_try_sched_waiting][{request_id}] mamba: num_new_tokens == 0")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
                 return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
@@ -727,6 +738,15 @@ class Scheduler(Scheduler):
                     self.kv_cache_manager.get_blocks(request_id),
                     num_external_computed_tokens,
                 )
+                if (
+                        self.connector_prefix_cache_stats is not None
+                        and connector_prefix_cache_queries != 0
+                    ):
+                        self.connector_prefix_cache_stats.record(
+                            num_tokens=connector_prefix_cache_queries,
+                            num_hits=connector_prefix_cache_hits,
+                            preempted=request.num_preemptions > 0,
+                        )
 
         return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 

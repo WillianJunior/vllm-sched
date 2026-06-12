@@ -769,6 +769,8 @@ class Scheduler(SchedulerInterface):
                     scheduled_new_reqs.append(request)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
+                    print(f"[fcfs][waiting] resuming PREEMPTED req {request.request_id}")
+
                 else:
                     raise RuntimeError(f"Invalid request status: {request.status}")
 
@@ -911,6 +913,8 @@ class Scheduler(SchedulerInterface):
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
+        print(f"[fcfs][_preempt_request] preempting {request.request_id}")
+
         request.num_computed_tokens = 0
         if request.spec_token_ids:
             request.spec_token_ids = []
