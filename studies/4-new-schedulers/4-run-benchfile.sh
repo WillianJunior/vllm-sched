@@ -1,3 +1,5 @@
+#!/bin/bash
+
 BENCHFILE=$1
 
 set -x

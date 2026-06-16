@@ -106,6 +106,8 @@ class Scheduler(SchedulerInterface):
             and self.kv_events_config.enable_kv_cache_events
         )
 
+        self.sched_step = 0
+
         # Create KVConnector for the Scheduler. Note that each Worker
         # will have a corresponding KVConnector with Role=WORKER.
         # KV Connector pushes/pull of remote KVs for P/D and offloading.
@@ -347,10 +349,26 @@ class Scheduler(SchedulerInterface):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
+        def get_num_blocks_debug(request_id):
+            num_blocks = 0
+            req_blocks = self.connector.connector_scheduler._request_block_ids.get(request_id)
+            if req_blocks:
+                num_blocks = len(req_blocks)
+            return num_blocks
+
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            request_id = request.request_id
+
+            req_blocks = self.connector.connector_scheduler._request_block_ids.get(request_id)
+            num_blocks = 0
+            if req_blocks:
+                num_blocks = len(req_blocks)
+
+            print(f"[fcfs][step{self.sched_step}][all_reqs_queue] running {request_id} have num blocks: {num_blocks}")
+
 
             if (
                 request.num_output_placeholders > 0
@@ -538,6 +556,13 @@ class Scheduler(SchedulerInterface):
                 request = self.waiting.peek_request()
                 request_id = request.request_id
 
+                req_blocks = self.connector.connector_scheduler._request_block_ids.get(request_id)
+                num_blocks = 0
+                if req_blocks:
+                    num_blocks = len(req_blocks)
+                print(f"[fcfs][step{self.sched_step}][all_reqs_queue] waiting {request.status} - {request_id} have num blocks: {num_blocks}")
+
+
                 # KVTransfer: skip request if still waiting for remote kvs.
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
                     is_ready = self._update_waiting_for_remote_kv(request)
@@ -555,6 +580,8 @@ class Scheduler(SchedulerInterface):
                         )
                         self.waiting.pop_request()
                         skipped_waiting_requests.prepend_request(request)
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] continue kv transfer not ready")
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                         continue
 
                 # Skip request if the structured output request is still waiting
@@ -566,6 +593,8 @@ class Scheduler(SchedulerInterface):
                     else:
                         self.waiting.pop_request()
                         skipped_waiting_requests.prepend_request(request)
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] continue fsm not ready")
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                         continue
 
                 # Streaming: skip request if still waiting for next streaming req.
@@ -573,6 +602,8 @@ class Scheduler(SchedulerInterface):
                     assert not request.streaming_queue
                     self.waiting.pop_request()
                     skipped_waiting_requests.prepend_request(request)
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] continue streaming req")
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                     continue
 
                 # Check that adding the request still respects the max_loras
@@ -588,6 +619,8 @@ class Scheduler(SchedulerInterface):
                     # Scheduling would exceed max_loras, skip.
                     self.waiting.pop_request()
                     skipped_waiting_requests.prepend_request(request)
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] continue max_loras exceeded")
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                     continue
 
                 num_external_computed_tokens = 0
@@ -615,6 +648,8 @@ class Scheduler(SchedulerInterface):
                             # the number of matched tokens.
                             self.waiting.pop_request()
                             skipped_waiting_requests.prepend_request(request)
+                            print(f"[fcfs][step{self.sched_step}][{request_id}] continue kv not able to detirmine matched tokens")
+                            print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                             continue
 
                         request.num_external_computed_tokens = ext_tokens
@@ -662,6 +697,8 @@ class Scheduler(SchedulerInterface):
                     ):
                         # If chunked_prefill is disabled,
                         # we can stop the scheduling here.
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] break chunked_prefill disabled")
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                         break
 
                     num_new_tokens = min(num_new_tokens, token_budget)
@@ -683,6 +720,8 @@ class Scheduler(SchedulerInterface):
                         )
                         if num_new_tokens == 0:
                             # The request cannot be scheduled.
+                            print(f"[fcfs][step{self.sched_step}][{request_id}] break num_new_tokens = 0 for encoder")
+                            print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                             break
 
                 if self.need_mamba_block_aligned_split:
@@ -693,6 +732,8 @@ class Scheduler(SchedulerInterface):
                         num_external_computed_tokens,
                     )
                     if num_new_tokens == 0:
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] break num_new_tokens = 0 for mamba")
+                        print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                         break
 
                 # Handles an edge case when P/D Disaggregation
@@ -728,6 +769,8 @@ class Scheduler(SchedulerInterface):
                     # manager
                     if request.has_encoder_inputs:
                         self.encoder_cache_manager.free(request)
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] break cannot be scheduled")
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                     break
 
                 # KVTransfer: the connector uses this info to determine
@@ -758,6 +801,9 @@ class Scheduler(SchedulerInterface):
                     # into the WAITING_FOR_REMOTE_KV state.
                     skipped_waiting_requests.prepend_request(request)
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] continue need to remote kv transfer")
+                    print(f"[fcfs][step{self.sched_step}][{request_id}] num_blocks: {get_num_blocks_debug(request_id)}")
                     continue
 
                 self.running.append(request)
@@ -799,6 +845,10 @@ class Scheduler(SchedulerInterface):
                         self.encoder_cache_manager.allocate(request, i)
                         if self.ec_connector is not None:
                             self.ec_connector.update_state_after_alloc(request, i)
+
+
+                print(f"[fcfs][step{self.sched_step}][{request_id}] finished sched num_blocks: {get_num_blocks_debug(request_id)}")
+
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
@@ -825,6 +875,8 @@ class Scheduler(SchedulerInterface):
                 num_common_prefix_blocks = (
                     self.kv_cache_manager.get_num_common_prefix_blocks(any_request_id)
                 )
+
+        scheduled_resumed_reqs_copy = scheduled_resumed_reqs.copy()
 
         # Construct the scheduler output.
         if self.use_v2_model_runner:
@@ -859,6 +911,10 @@ class Scheduler(SchedulerInterface):
         self.prev_step_scheduled_req_ids.clear()
         self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
 
+        for req in scheduled_resumed_reqs_copy:
+            request_id = req.request_id
+            print(f"[fcfs][step{self.sched_step}][{request_id}] before_sched_output num_blocks: {get_num_blocks_debug(request_id)}")
+
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=cached_reqs_data,
@@ -877,6 +933,12 @@ class Scheduler(SchedulerInterface):
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
         )
 
+        for req in scheduled_resumed_reqs_copy:
+            request_id = req.request_id
+            print(f"[fcfs][step{self.sched_step}][{request_id}] after_sched_output num_blocks: {get_num_blocks_debug(request_id)}")
+            print(f"[fcfs][step{self.sched_step}][{request_id}] scheduler_output: {scheduler_output}")
+
+
         # NOTE(Kuntai): this function is designed for multiple purposes:
         # 1. Plan the KV cache store
         # 2. Wrap up all the KV cache load / save ops into an opaque object
@@ -887,6 +949,11 @@ class Scheduler(SchedulerInterface):
             )
             scheduler_output.kv_connector_metadata = meta
 
+        for req in scheduled_resumed_reqs_copy:
+            request_id = req.request_id
+            print(f"[fcfs][step{self.sched_step}][{request_id}] after_build_connector_meta num_blocks: {get_num_blocks_debug(request_id)}")
+            print(f"[fcfs][step{self.sched_step}][{request_id}] scheduler_output: {scheduler_output}")
+            
         # Build the connector meta for ECConnector
         if self.ec_connector is not None:
             ec_meta: ECConnectorMetadata = self.ec_connector.build_connector_meta(
@@ -898,6 +965,7 @@ class Scheduler(SchedulerInterface):
             self._update_after_schedule(scheduler_output)
 
         print(f"[fcfs] sched_time {time.monotonic() - scheduled_timestamp}")
+        self.sched_step += 1
 
         return scheduler_output
 

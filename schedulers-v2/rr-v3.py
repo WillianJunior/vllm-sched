@@ -129,17 +129,22 @@ class Scheduler(Scheduler):
         num_sched_reqs = 0
         while all_reqs_queue:
             if num_sched_reqs >= self.max_num_running_reqs:
-                print(f"[rr][all_reqs] reached MNS")
+                print(f"[rr][step{self.sched_step}][all_reqs] reached MNS")
                 break
 
             if token_budget <= 0:
-                print(f"[rr][all_reqs] exausted token_budget")
+                print(f"[rr][step{self.sched_step}][all_reqs] exausted token_budget")
                 break
 
             request = all_reqs_queue.pop(0)
             request_id = request.request_id
 
-            print(f"[rr][all_reqs_queue] trying req {request_id}, {len(all_reqs_queue)} remaining in the queue, num_sched_reqs={num_sched_reqs}")
+            print(f"[rr][step{self.sched_step}][all_reqs_queue] trying req {request_id}, status={request.status}, {len(all_reqs_queue)} remaining in the queue, num_sched_reqs={num_sched_reqs}")
+            req_blocks = self.connector.connector_scheduler._request_block_ids.get(request_id)
+            num_blocks = 0
+            if req_blocks:
+                num_blocks = len(req_blocks)
+            print(f"[rr][step{self.sched_step}][all_reqs_queue] {request_id} have num blocks: {num_blocks}")
 
             if request.status == RequestStatus.RUNNING:
                 can_schedule_request, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input = self._try_sched_running(
@@ -177,7 +182,7 @@ class Scheduler(Scheduler):
                     break
             else:
                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
-                    print(f"[rr] waiting is wait remote kvs")
+                    print(f"[rr][step{self.sched_step}] req {request_id} waiting is wait remote kvs")
                     is_ready = self._update_waiting_for_remote_kv(request)
                     if is_ready:
                         if request.num_preemptions:
@@ -192,24 +197,40 @@ class Scheduler(Scheduler):
                             "%s is still in WAITING_FOR_REMOTE_KVS state.",
                             request.request_id,
                         )
+                        print(f"[rr][step{self.sched_step}] req {request_id} WAITING_FOR_REMOTE_KVS not yet ready...")
+
+                        # Still marks this request as scheduled in this step.
+                        # This avoids loading too many requests to gpu and
+                        # having to preempt them later
+                        num_sched_reqs += 1
 
                         # Skiping this request
                         continue
 
                 elif request.status == RequestStatus.WAITING_FOR_FSM:
-                    print(f"[rr] waiting is wait fsm")
+                    print(f"[rr][step{self.sched_step}] req {request_id} waiting is wait fsm")
                     structured_output_req = request.structured_output_request
                     if structured_output_req and structured_output_req.grammar:
                         request.status = RequestStatus.WAITING
                         # Continue scheduling this waiting request
                     else:
+                        # Still marks this request as scheduled in this step.
+                        # This avoids loading too many requests to gpu and
+                        # having to preempt them later
+                        num_sched_reqs += 1
+
                         # Skiping this request
                         continue
 
                 elif request.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
-                    print(f"[rr] waiting is wait streaming")
+                    print(f"[rr][step{self.sched_step}] req {request_id} waiting is wait streaming")
                     assert not request.streaming_queue
-                    
+
+                    # Still marks this request as scheduled in this step.
+                    # This avoids loading too many requests to gpu and
+                    # having to preempt them later
+                    num_sched_reqs += 1
+
                     # Skiping this request
                     continue
 
@@ -217,9 +238,9 @@ class Scheduler(Scheduler):
                     request, all_reqs_queue, scheduled_loras, token_budget, 
                     encoder_compute_budget, scheduled_encoder_inputs, preempted_reqs)
 
-                print(f"[rr][{request_id}] can_schedule_request: {can_schedule_request}, load_kv_async: {load_kv_async}")
+                print(f"[rr][step{self.sched_step}][{request_id}] can_schedule_request: {can_schedule_request}, load_kv_async: {load_kv_async}")
                 if can_schedule_request and load_kv_async:
-                    print(f"[rr][{request_id}] need to wait remote KVS")
+                    print(f"[rr][step{self.sched_step}][{request_id}] need to wait remote KVS")
                     # If loading async, memory was allocated.
                     # Now need to wait for loading.
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
@@ -243,10 +264,11 @@ class Scheduler(Scheduler):
                         )
 
                     if request.status == RequestStatus.WAITING:
-                        print(f"[rr][waiting] resuming WAITING req {request_id}")
+                        print(f"[rr][step{self.sched_step}][waiting] resuming WAITING req {request_id}")
                         scheduled_new_reqs.append(request)
                     elif request.status == RequestStatus.PREEMPTED:
-                        print(f"[rr][waiting] resuming PREEMPTED req {request_id}")
+
+                        print(f"[rr][step{self.sched_step}][waiting] resuming PREEMPTED req {request_id}")
                         scheduled_resumed_reqs.append(request)
                     else:
                         raise RuntimeError(f"Invalid request status: {request.status}")
@@ -296,7 +318,7 @@ class Scheduler(Scheduler):
         # There may be requests in all_reqs_queue which were running but the budget is spent
         for request in all_reqs_queue:
             if request.status == RequestStatus.RUNNING:
-                print(f"[rr][prep_output] req {request.request_id} was running, not anymore...")                
+                print(f"[rr][step{self.sched_step}][prep_output] req {request.request_id} was running, not anymore...")                
                 
                 self.running.remove(request)
                 self._preempt_request(request, time.monotonic())
@@ -307,7 +329,7 @@ class Scheduler(Scheduler):
                 
                 assert len(self.waiting) == len(set(self.waiting)) # expensive... remove later
 
-        print(f"[rr][prep_output] running: {len(self.running)}, waiting: {len(self.waiting)}")
+        print(f"[rr][step{self.sched_step}][prep_output] running: {len(self.running)}, waiting: {len(self.waiting)}")
 
         assert len(self.waiting) == len(set(self.waiting)) # expensive... remove later
         assert len(self.running) == len(set(self.running)) # expensive... remove later
@@ -430,9 +452,10 @@ class Scheduler(Scheduler):
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
 
-        print(f"[rr] sched_time {time.monotonic() - scheduled_timestamp}")
+        print(f"[rr][step{self.sched_step}] sched_time {time.monotonic() - scheduled_timestamp}")
 
         #print(f"[rr] done scheduling")
+        self.sched_step += 1
         return scheduler_output
         
 
@@ -449,7 +472,7 @@ class Scheduler(Scheduler):
         new_encoder_compute_budget = encoder_compute_budget
         external_load_encoder_input = []
         
-        print(f"[rr][running] trying {request.request_id}")
+        print(f"[rr][step{self.sched_step}][running] trying {request.request_id}")
         assert len(self.waiting) == len(set(self.waiting))
 
         # === 1. pre-checks =========================================
@@ -471,7 +494,7 @@ class Scheduler(Scheduler):
             # Request was already removed from the queue and still is
             # in self.running
             # return token_budget, encoder_compute_budget, False, True
-            print(f"[rr][running] request.num_output_placeholders>0 for {request_id}")
+            print(f"[rr][step{self.sched_step}][running] request.num_output_placeholders>0 for {request_id}")
             return False, new_blocks, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
         num_new_tokens = (
@@ -528,7 +551,7 @@ class Scheduler(Scheduler):
             # we do not strictly follow the FCFS scheduling policy and
             # allow the lower-priority requests to be scheduled.
 
-            print(f"[rr][running] req {request_id} num_new_tokens == 0")
+            print(f"[rr][step{self.sched_step}][running] req {request_id} num_new_tokens == 0")
 
             return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
         
@@ -539,10 +562,10 @@ class Scheduler(Scheduler):
             preempted_reqs, self.num_lookahead_tokens)
 
         if new_blocks is not None:
-            print(f"[rr][running] can schedule {request_id}, cur_time={request.cur_time}")
+            print(f"[rr][step{self.sched_step}][running] can schedule {request_id}, cur_time={request.cur_time}")
             return True, new_blocks, num_new_tokens, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
         else:
-            print(f"[rr][running] cannot schedule {request_id} because new_blocks is none")
+            print(f"[rr][step{self.sched_step}][running] cannot schedule {request_id} because new_blocks is none")
             return False, None, 0, encoder_inputs_to_schedule, new_encoder_compute_budget, external_load_encoder_input
 
     def _try_sched_waiting(self, request, requests_queue, scheduled_loras, token_budget, 
@@ -586,13 +609,13 @@ class Scheduler(Scheduler):
 
         # Get already-cached tokens.
         if request.num_computed_tokens == 0:
-            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] getting cached tokens")
+            print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] getting cached tokens")
             # Get locally-cached tokens.
             new_computed_blocks, num_new_local_computed_tokens = (
                 self.kv_cache_manager.get_computed_blocks(request)
             )
-            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] new_computed_blocks={new_computed_blocks}")
-            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] num_new_local_computed_tokens={num_new_local_computed_tokens}")
+            print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] len(new_computed_blocks)={len(new_computed_blocks)}")
+            print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] num_new_local_computed_tokens={num_new_local_computed_tokens}")
 
             # Get externally-cached tokens if using a KVConnector.
             if self.connector is not None:
@@ -601,7 +624,7 @@ class Scheduler(Scheduler):
                         request, num_new_local_computed_tokens
                     )
                 )
-                print(f"[rr][_try_sched_waiting][kv_load][{request_id}] have connector. ext_tokens={ext_tokens}, load_kv_async={load_kv_async}")
+                print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] have connector. ext_tokens={ext_tokens}, load_kv_async={load_kv_async}")
 
                 if ext_tokens is None:
                     # The request cannot be scheduled because
@@ -610,7 +633,7 @@ class Scheduler(Scheduler):
                     #self.waiting.pop_request()
                     #will #self.waiting.remove(request)
                     #skipped_waiting_requests.prepend_request(request)
-                    print(f"[rr][_try_sched_waiting][kv_load][{request_id}] ext_tokens is None")
+                    print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] ext_tokens is None")
                     return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
 
                 request.num_external_computed_tokens = ext_tokens
@@ -625,7 +648,7 @@ class Scheduler(Scheduler):
             num_computed_tokens = (
                 num_new_local_computed_tokens + num_external_computed_tokens
             )
-            print(f"[rr][_try_sched_waiting][kv_load][{request_id}] final prefix: num_computed_tokens={num_computed_tokens}, num_new_local_computed_tokens={num_new_local_computed_tokens}, num_external_computed_tokens={num_external_computed_tokens}, connector_prefix_cache_queries={connector_prefix_cache_queries}")
+            print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] final prefix: num_computed_tokens={num_computed_tokens}, num_new_local_computed_tokens={num_new_local_computed_tokens}, num_external_computed_tokens={num_external_computed_tokens}, connector_prefix_cache_queries={connector_prefix_cache_queries}")
         else:
             print(f"[rr][_try_sched_waiting][kv_load][{request_id}] no cached tokens")
             # KVTransfer: WAITING reqs have num_computed_tokens > 0
@@ -643,11 +666,11 @@ class Scheduler(Scheduler):
 
         if load_kv_async:
             # KVTransfer: loading remote KV, do not allocate for new work.
-            print(f"[rr][_try_sched_waiting][{request_id}] load_kv_async")
+            print(f"[rr][step{self.sched_step}][_try_sched_waiting][{request_id}] load_kv_async")
             assert num_external_computed_tokens > 0
             num_new_tokens = 0
         else:
-            print(f"[rr][_try_sched_waiting][{request_id}] no need for load_kv_async")
+            print(f"[rr][step{self.sched_step}][_try_sched_waiting][{request_id}] no need for load_kv_async")
             # Number of tokens to be scheduled.
             # We use `request.num_tokens` instead of
             # `request.num_prompt_tokens` to consider the resumed
@@ -665,7 +688,7 @@ class Scheduler(Scheduler):
             ):
                 # If chunked_prefill is disabled,
                 # we can stop the scheduling here.
-                print(f"[rr][_try_sched_waiting][{request_id}] pooling/chunked preffil break")
+                print(f"[rr][step{self.sched_step}][_try_sched_waiting][{request_id}] pooling/chunked preffil break")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
                 return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
@@ -689,7 +712,7 @@ class Scheduler(Scheduler):
                 )
                 if num_new_tokens == 0:
                     # The request cannot be scheduled.
-                    print(f"[rr][_try_sched_waiting][{request_id}] encoder: num_new_tokens == 0")
+                    print(f"[rr][step{self.sched_step}][_try_sched_waiting][{request_id}] encoder: num_new_tokens == 0")
                     # TODO: When does this happens? This ended scheduling in FCFS
                     raise Exception("This ended scheduling in FCFS...")
                     return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
@@ -702,7 +725,7 @@ class Scheduler(Scheduler):
                 num_external_computed_tokens,
             )
             if num_new_tokens == 0:
-                print(f"[rr][_try_sched_waiting][{request_id}] mamba: num_new_tokens == 0")
+                print(f"[rr][step{self.sched_step}][_try_sched_waiting][{request_id}] mamba: num_new_tokens == 0")
                 # TODO: When does this happens? This ended scheduling in FCFS
                 raise Exception("This ended scheduling in FCFS...")
                 return did_schedule, new_blocks, load_kv_async, num_computed_tokens, num_new_tokens, encoder_inputs_to_schedule, encoder_compute_budget, external_load_encoder_input
@@ -742,6 +765,7 @@ class Scheduler(Scheduler):
                         self.connector_prefix_cache_stats is not None
                         and connector_prefix_cache_queries != 0
                     ):
+                        print(f"[rr][step{self.sched_step}][_try_sched_waiting][{request_id}] self.connector_prefix_cache_stats.record: connector_prefix_cache_queries={connector_prefix_cache_queries}, connector_prefix_cache_hits={connector_prefix_cache_hits}, request.num_preemptions={request.num_preemptions}")
                         self.connector_prefix_cache_stats.record(
                             num_tokens=connector_prefix_cache_queries,
                             num_hits=connector_prefix_cache_hits,
@@ -790,12 +814,12 @@ class Scheduler(Scheduler):
 
                 if not requests_queue:
                     # No other valid requests to preempt. Not enough kv blocks.
-                    print("[rr][_try_allocate_kv_blocks] cannot preempt to allocate blocks")
+                    print("[rr][step{self.sched_step}][_try_allocate_kv_blocks] cannot preempt to allocate blocks")
                     break
 
                 # Preempting the last (valid) request in the queue
                 preempted_req_id = preempted_req.request_id
-                print(f"[rr][_try_allocate_kv_blocks] preempting {preempted_req_id} with status {preempted_req.status}")
+                print(f"[rr][step{self.sched_step}][_try_allocate_kv_blocks] preempting {preempted_req_id} with status {preempted_req.status}")
 
                 preempted_encoder_inputs = scheduled_encoder_inputs.pop(
                     preempted_req_id, None
@@ -838,7 +862,7 @@ class Scheduler(Scheduler):
         #assert request.status == RequestStatus.RUNNING, (
         #    "Only running requests can be preempted"
         #)
-        print(f"[rr][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() before: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
+        print(f"[rr][step{self.sched_step}][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() before: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
@@ -850,6 +874,6 @@ class Scheduler(Scheduler):
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
         request.cur_time = 0
 
-        print(f"[rr] preemption: {request.request_id}")
-        print(f"[rr][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
+        print(f"[rr][step{self.sched_step}] preemption: {request.request_id}")
+        print(f"[rr][step{self.sched_step}][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
 
