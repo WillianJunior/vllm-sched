@@ -25,7 +25,7 @@ while IFS= read -r line; do
     source intermediary-scripts/run-single-bench.sh "${bench_config[@]}"
 
     echo "=== vLLM stop ============================================================"
-    bash intermediary-scripts/single-engine-stop.sh $SERVER_PID $TMP_OUTPUTS_PATH/$SERVER_FILENAME $OUTPUTS_PATH/$SERVER_FILENAME
+    bash intermediary-scripts/single-engine-stop.sh $SERVER_PID $TMP_OUTPUTS_PATH/$SERVER_FILENAME $OUTPUTS_PATH/$SERVER_FILENAME $OUTPUTS_PATH/$BENCH_FILENAME
 
 done < $BENCHFILE
 

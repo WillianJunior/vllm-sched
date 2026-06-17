@@ -140,7 +140,9 @@ class Scheduler(Scheduler):
             request_id = request.request_id
 
             print(f"[rr][step{self.sched_step}][all_reqs_queue] trying req {request_id}, status={request.status}, {len(all_reqs_queue)} remaining in the queue, num_sched_reqs={num_sched_reqs}")
-            req_blocks = self.connector.connector_scheduler._request_block_ids.get(request_id)
+            req_blocks = None
+            if self.connector:
+                req_blocks = self.connector.connector_scheduler._request_block_ids.get(request_id)
             num_blocks = 0
             if req_blocks:
                 num_blocks = len(req_blocks)

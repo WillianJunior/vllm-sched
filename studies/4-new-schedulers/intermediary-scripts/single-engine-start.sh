@@ -6,8 +6,9 @@ fi
 set -e
 set +x
 
+module unload anaconda3.2023.09-0
 module load anaconda3.2023.09-0
-
+conda deactivate
 conda activate ../../envs/vllm-0.16.0/
 
 set -x
