@@ -915,6 +915,15 @@ class Scheduler(SchedulerInterface):
             request_id = req.request_id
             print(f"[fcfs][step{self.sched_step}][{request_id}] before_sched_output num_blocks: {get_num_blocks_debug(request_id)}")
 
+        print(f"[rr][step{self.sched_step}] new_reqs_data: {new_reqs_data}")
+        print(f"[rr][step{self.sched_step}] cached_reqs_data: {cached_reqs_data}")
+        print(f"[rr][step{self.sched_step}] num_scheduled_tokens: {num_scheduled_tokens}")
+        print(f"[rr][step{self.sched_step}] total_num_scheduled_tokens: {total_num_scheduled_tokens}")
+        print(f"[rr][step{self.sched_step}] scheduled_spec_decode_tokens: {scheduled_spec_decode_tokens}")
+        print(f"[rr][step{self.sched_step}] scheduled_encoder_inputs: {scheduled_encoder_inputs}")
+        print(f"[rr][step{self.sched_step}] num_common_prefix_blocks: {num_common_prefix_blocks}")
+
+
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=cached_reqs_data,
@@ -932,6 +941,7 @@ class Scheduler(SchedulerInterface):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
         )
+        print(f"[rr][step{self.sched_step}] scheduler_output_before {scheduler_output}")
 
         for req in scheduled_resumed_reqs_copy:
             request_id = req.request_id
@@ -965,6 +975,8 @@ class Scheduler(SchedulerInterface):
             self._update_after_schedule(scheduler_output)
 
         print(f"[fcfs] sched_time {time.monotonic() - scheduled_timestamp}")
+        print(f"[rr][step{self.sched_step}] scheduler_output_after {scheduler_output}")
+
         self.sched_step += 1
 
         return scheduler_output

@@ -282,6 +282,11 @@ class Scheduler(Scheduler):
                     # Count the number of prefix cached tokens.
                     if request.num_cached_tokens < 0:
                         request.num_cached_tokens = num_computed_tokens
+
+                # There can be reused blocks for the current request, not just the
+                # newly allocated blocks in this step. Thus, since this request
+                # was waiting, all of its blocks are "new" to it (i.e., in gpu)
+                new_blocks = self.kv_cache_manager.get_blocks(request_id)
             
             if not can_schedule_request:
                 # Either the request needs to wait, or it consumed
@@ -291,6 +296,7 @@ class Scheduler(Scheduler):
             # Finish scheduling
             num_sched_reqs += 1
             req_to_new_blocks[request_id] = new_blocks
+
             num_scheduled_tokens[request_id] = num_new_tokens
             token_budget -= num_new_tokens
             request.cur_time += 1
@@ -385,22 +391,6 @@ class Scheduler(Scheduler):
                 for req in scheduled_new_reqs
             ]
 
-        if False: # just disable the prints
-            print(f"[rr][cached_reqs] sched_running:")
-            for r in scheduled_running_reqs:
-                print(f"\t{r.request_id}")
-            print(f"[rr][cached_reqs] sched_resumed:")
-            for r in scheduled_resumed_reqs:
-                print(f"\t{r.request_id}")
-
-            print(f"[rr][cached_reqs] waiting")
-            for r in self.waiting:
-                print(f"\t{r.request_id}")
-
-            print(f"[rr][cached_reqs] running:")
-            for r in self.running:
-                print(f"\t{r.request_id}")
-
         with record_function_or_nullcontext("schedule: make_cached_request_data"):
             cached_reqs_data = self._make_cached_request_data(
                 scheduled_running_reqs,
@@ -409,6 +399,9 @@ class Scheduler(Scheduler):
                 scheduled_spec_decode_tokens,
                 req_to_new_blocks,
             )
+
+        print(f"[rr][step{self.sched_step}] cached_reqs_data: {cached_reqs_data}")
+
 
         # TODO: WAS INN PREVIOUS CODE, BUT REMOVED. IT IS NECESSARY?
         # Record the request ids that were scheduled in this step.
@@ -431,6 +424,7 @@ class Scheduler(Scheduler):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
         )
+        print(f"[rr][step{self.sched_step}] scheduler_output_before {scheduler_output}")
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
         # 1. Plan the KV cache store
@@ -453,6 +447,7 @@ class Scheduler(Scheduler):
             self._update_after_schedule(scheduler_output)
 
         print(f"[rr][step{self.sched_step}] sched_time {time.monotonic() - scheduled_timestamp}")
+        print(f"[rr][step{self.sched_step}] scheduler_output_after {scheduler_output}")
 
         #print(f"[rr] done scheduling")
         self.sched_step += 1
@@ -614,7 +609,7 @@ class Scheduler(Scheduler):
             new_computed_blocks, num_new_local_computed_tokens = (
                 self.kv_cache_manager.get_computed_blocks(request)
             )
-            print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] len(new_computed_blocks)={len(new_computed_blocks)}")
+            #print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] len(new_computed_blocks)={len(new_computed_blocks)}")
             print(f"[rr][step{self.sched_step}][_try_sched_waiting][kv_load][{request_id}] num_new_local_computed_tokens={num_new_local_computed_tokens}")
 
             # Get externally-cached tokens if using a KVConnector.
