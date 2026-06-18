@@ -1,0 +1,9 @@
+# Fields: <model_path> <scheduler_cls> <scheduler_path> <offloading> <kv_mem> <max_num_seqs> <max_model_len> | <model_path> <is_share_gpt [0|1]> <request_rate> <num_prompts> <burstness> <max_concur> <output_paths>
+# Example server: /snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.3 10 2000
+# Example bench:  /snfs1/llm-models/llama-3.2-3B-Instruct 1 5 10 1 999 ./vllm_outputs
+
+
+# full batch, overmem, a lot of offloading space ERROR CASE
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+/snfs1/llm-models/llama-3.2-3B-Instruct fcfs.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+

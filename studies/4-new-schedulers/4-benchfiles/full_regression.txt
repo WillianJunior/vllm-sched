@@ -1,0 +1,45 @@
+# Fields: <model_path> <scheduler_cls> <scheduler_path> <offloading> <kv_mem> <max_num_seqs> <max_model_len> | <model_path> <is_share_gpt [0|1]> <num_prompts> <request_rate> <burstness> <max_concur> <output_paths>
+# Example server: /snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.3 10 2000
+# Example bench:  /snfs1/llm-models/llama-3.2-3B-Instruct 1 5 10 1 999 ./vllm_outputs
+
+
+# single req
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.9 1 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 1 1 1 1 999 ./vllm_outputs
+
+# full batch, all fit on mem, no offloading
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.9 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 1 10 999 1 999 ./vllm_outputs
+
+
+# oversched single batch, all fit on mem, no offloading
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.9 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 1 30 999 1 999 ./vllm_outputs
+
+
+# oversched burst, all fit on mem, no offloading
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.9 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 1 60 3 0.4 999 ./vllm_outputs
+
+
+
+# full batch, overmem, no offloading
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.3 15 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+
+# full batch, overmem, a lot of offloading space
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+
+# full batch, overmem, limited offloading space (i.e., must recompute preempt) (TODO: checar se 2 GB está ok...
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 2 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+
+
+
+# oversched single batch, overmem, no offloading
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 1 30 999 1 999 ./vllm_outputs
+
+# oversched single batch, overmem, a lot of offloading space
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+
+# oversched single batch, overmem, limited offloading space
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 2 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+
+
+# FINAL: oversched burst, overmem, limited offloading space (TODO: check request rate + burstness)
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 2 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 1 50 4 0.4 999 ./vllm_outputs
+
