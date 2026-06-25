@@ -55,12 +55,53 @@ class Scheduler(Scheduler):
 
         setattr(Request, "cur_time", 0)
         
+        # Métricas para cálculo do VLT
+        setattr(Request, "t_arr", 0.0)
+        setattr(Request, "t_run", 0.0)
+        setattr(Request, "t_last", 0.0)
+        
+        # Parâmetros do SuperInfer
+        self.ttft_slo = 5.0    # Limite de TTFT em segundos
+        self.tbt_slo = 0.1     # Limite de TBT (ITL) em segundos
+        self.alpha = 3.0       # Sensibilidade do ITL
+        self.beta_b = 0.0      # Tolerância para o TTFT
+        self.beta_f = 0.5      # Tolerância para o ITL
+        
         # Will: bad bug fix...
         # waiting_remote_kvs changes to PREEMPTED when available for execution.
         # however, it was on self.running before, not self.waiting.
         # When scheduling a PREEMPTED req we self.waiting.pop(req).
         # This only skips the self.waiting.pop(req).
         setattr(Request, "was_waiting_remote_kvs", False)
+        
+    def calculate_vlt(self, request: Request, t_now: float) -> float:
+        """
+        Calcula o Virtual Lag Time (VLT) baseado no estado da requisição.
+        Valores positivos maiores indicam maior urgência (risco de violar SLO).
+        Valores negativos indicam requisições adiantadas (candidatas à preempção).
+        """
+        status = request.status
+
+        if status == RequestStatus.WAITING:
+            # Fórmula: ReLU(t_now - t_arr - beta_B * S_B)
+            # Foco: Evitar violação de TTFT
+            lag = t_now - request.t_arr - (self.beta_b * self.ttft_slo)
+            return max(0.0, lag)
+
+        elif status == RequestStatus.PREEMPTED:
+            # Fórmula: ReLU(t_now - t_last - beta_F * S_F)^alpha
+            # Foco: Evitar violação de ITL/TBT (engasgos longos)
+            lag = t_now - request.t_last - (self.beta_f * self.tbt_slo)
+            return max(0.0, lag) ** self.alpha
+
+        elif status == RequestStatus.RUNNING:
+            # Fórmula: (t_now - t_run)
+            # Foco: Identificar requisições que estão monopolizando a GPU
+            # Como queremos que os valores de running sejam negativos para 
+            # ficarem no fim da fila, invertemos o sinal do tempo de execução:
+            return -(t_now - request.t_run)
+            
+        return 0.0
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
@@ -106,25 +147,34 @@ class Scheduler(Scheduler):
         # Assumption: self.running is sorted by priority. If a running
         # request cannot run due to OOM, self.running.pop() can return
         # a preemption victim.
-        all_reqs_queue = []
-        remaining_reqs = []
-        req_idx = 0
-        for request in self.running:
-            if request.cur_time >= self.quantum:
-                remaining_reqs.append(request)
-            else:
-                all_reqs_queue.append(request)
+        
+        t_now = scheduled_timestamp #Captura do tempo
 
+        # Atualiza o t_last para quem já estava rodando (geraram tokens no step anterior)
+        for req in self.running:
+            req.t_last = t_now
+
+        # Unifica todas as requisições em uma fila única
+        all_reqs_queue = []
+        all_reqs_queue.extend(self.running)
+        
         # Get requests which were scheduled, but are still waiting
         # E.g., KV, encoder, FSM, ...
         # Assumption: self.waiting is ordered by priority
         for request in self.waiting:
             if request.status == RequestStatus.WAITING:
-                remaining_reqs.append(request)
+                all_reqs_queue.append(request)
             else:
                 all_reqs_queue.append(request)
 
-        all_reqs_queue.extend(remaining_reqs)
+        # Inicialização de segurança (Lazy init para t_arr)
+        for req in all_reqs_queue:
+            if not hasattr(req, 't_arr') or req.t_arr == 0.0:
+                req.t_arr = t_now
+
+        # Política LVF (Largest-VLT-First) do RotaSched
+        # Ordena a fila: maiores VLTs (urgentes) no início, menores/negativos (running) no final
+        all_reqs_queue.sort(key=lambda req: self._calculate_vlt(req, t_now), reverse=True)
 
         num_sched_reqs = 0
         while all_reqs_queue:
@@ -259,6 +309,8 @@ class Scheduler(Scheduler):
                 if can_schedule_request:
                     self.waiting.remove(request)
                     self.running.append(request)
+                    
+                    request.t_run = t_now
 
                     if self.log_stats:
                         request.record_event(
