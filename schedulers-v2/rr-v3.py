@@ -59,13 +59,13 @@ class Scheduler(Scheduler):
         setattr(Request, "t_arr", 0.0)
         setattr(Request, "t_run", 0.0)
         setattr(Request, "t_last", 0.0)
-        
+
         # Parâmetros do SuperInfer
         self.ttft_slo = 5.0    # Limite de TTFT em segundos
         self.tbt_slo = 0.1     # Limite de TBT (ITL) em segundos
-        self.alpha = 3.0       # Sensibilidade do ITL
-        self.beta_b = 0.0      # Tolerância para o TTFT
-        self.beta_f = 0.5      # Tolerância para o ITL
+        self.alpha = 2.0       # Sensibilidade do ITL
+        self.beta_b = 0.1      # Tolerância para o TTFT
+        self.beta_f = 0.4      # Tolerância para o ITL
         
         # Will: bad bug fix...
         # waiting_remote_kvs changes to PREEMPTED when available for execution.
@@ -148,11 +148,15 @@ class Scheduler(Scheduler):
         # request cannot run due to OOM, self.running.pop() can return
         # a preemption victim.
         
-        t_now = scheduled_timestamp #Captura do tempo
+        if not hasattr(self, 'prev_step_scheduled_req_ids'):
+            self.prev_step_scheduled_req_ids = set()
 
-        # Atualiza o t_last para quem já estava rodando (geraram tokens no step anterior)
-        for req in self.running:
-            req.t_last = t_now
+        t_now = scheduled_timestamp
+        
+        # Atualiza t_last APENAS para quem realmente gerou token no step anterior
+        for request in self.running:
+            if request.request_id in self.prev_step_scheduled_req_ids:
+                request.t_last = t_now
 
         # Unifica todas as requisições em uma fila única
         all_reqs_queue = []
@@ -174,7 +178,7 @@ class Scheduler(Scheduler):
 
         # Política LVF (Largest-VLT-First) do RotaSched
         # Ordena a fila: maiores VLTs (urgentes) no início, menores/negativos (running) no final
-        all_reqs_queue.sort(key=lambda req: self._calculate_vlt(req, t_now), reverse=True)
+        all_reqs_queue.sort(key=lambda req: self.calculate_vlt(req, t_now), reverse=True)
 
         num_sched_reqs = 0
         while all_reqs_queue:
@@ -374,20 +378,28 @@ class Scheduler(Scheduler):
             # If there are still requests in the queue, the batch should be full
             assert num_sched_reqs == self.max_num_running_reqs or token_budget == 0
 
-        
         # There may be requests in all_reqs_queue which were running but the budget is spent
-        for request in all_reqs_queue:
-            if request.status == RequestStatus.RUNNING:
-                print(f"[rr][step{self.sched_step}][prep_output] req {request.request_id} was running, not anymore...")                
+        while len(self.running) > self.max_num_running_reqs:
+            preempt_victim = None
+            # Procura de trás para frente na fila (onde estão as requisições com VLT negativo/saudáveis)
+            for i in range(len(all_reqs_queue) - 1, -1, -1):
+                if all_reqs_queue[i].status == RequestStatus.RUNNING:
+                    preempt_victim = all_reqs_queue.pop(i)
+                    break
+            
+            if preempt_victim:
+                print(f"[rr][step{self.sched_step}][prep_output] req {preempt_victim.request_id} was preempted to maintain MNS limit.")                
                 
-                self.running.remove(request)
-                self._preempt_request(request, time.monotonic())
-                preempted_reqs.append(request)
+                self.running.remove(preempt_victim)
+                self._preempt_request(preempt_victim, time.monotonic())
+                preempted_reqs.append(preempt_victim)
                 
-                assert request not in self.waiting
-                self.waiting.append(request)
+                assert preempt_victim not in self.waiting
+                self.waiting.append(preempt_victim)
                 
                 assert len(self.waiting) == len(set(self.waiting)) # expensive... remove later
+            else:
+                break
 
         print(f"[rr][step{self.sched_step}][prep_output] running: {len(self.running)}, waiting: {len(self.waiting)}")
 
@@ -406,8 +418,11 @@ class Scheduler(Scheduler):
 
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
+        
         if len(self.waiting) > 0:
-            assert len(self.running) > 0
+            num_loading = sum(1 for req in self.waiting if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS)
+            if num_loading == 0:
+                assert len(self.running) > 0
         # Since some requests in the RUNNING queue may not be scheduled in
         # this step, the total number of scheduled requests can be smaller than
         # len(self.running).
@@ -921,7 +936,7 @@ class Scheduler(Scheduler):
         request.num_preemptions += 1
         if self.log_stats:
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
-        request.cur_time = 0
+        request.t_last = timestamp
 
         print(f"[rr][step{self.sched_step}] preemption: {request.request_id}")
         print(f"[rr][step{self.sched_step}][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
