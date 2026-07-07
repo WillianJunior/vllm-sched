@@ -7,6 +7,7 @@ import time
 from functools import cmp_to_key
 
 import numpy as np
+import os
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
@@ -59,14 +60,15 @@ class Scheduler(Scheduler):
         setattr(Request, "t_arr", 0.0)
         setattr(Request, "t_run", 0.0)
         setattr(Request, "t_last", 0.0)
-
         # Parâmetros do SuperInfer
-        self.ttft_slo = 5.0    # Limite de TTFT em segundos
-        self.tbt_slo = 0.1     # Limite de TBT (ITL) em segundos
-        self.alpha = 2.0       # Sensibilidade do ITL
-        self.beta_b = 0.1      # Tolerância para o TTFT
-        self.beta_f = 0.4      # Tolerância para o ITL
+        self.ttft_slo = float(os.environ.get('VLT_TTFT_SLO', 5.0))
+        self.tbt_slo = float(os.environ.get('VLT_TBT_SLO', 0.05))
         
+        # Parâmetros do Optuna
+        self.alpha = float(os.environ.get('VLT_ALPHA', 2.0))
+        self.beta_b = float(os.environ.get('VLT_BETA_B', 0.1))
+        self.beta_f = float(os.environ.get('VLT_BETA_F', 0.4))
+
         # Will: bad bug fix...
         # waiting_remote_kvs changes to PREEMPTED when available for execution.
         # however, it was on self.running before, not self.waiting.
@@ -325,9 +327,19 @@ class Scheduler(Scheduler):
                         print(f"[rr][step{self.sched_step}][waiting] resuming WAITING req {request_id}")
                         scheduled_new_reqs.append(request)
                     elif request.status == RequestStatus.PREEMPTED:
-
                         print(f"[rr][step{self.sched_step}][waiting] resuming PREEMPTED req {request_id}")
                         scheduled_resumed_reqs.append(request)
+                        
+                        time_spent_out = t_now - getattr(request, 't_preempted_at', t_now)
+                        steps_spent_out = self.sched_step - getattr(request, 'step_preempted_at', self.sched_step)
+                        
+                        blocks_loaded = len(new_blocks) if new_blocks else 0
+                        
+                        print(f"[METRICS-RECOVERY][step{self.sched_step}][{request_id}] "
+                              f"Tempo fora: {time_spent_out:.4f}s | "
+                              f"Steps fora: {steps_spent_out} | "
+                              f"Blocos KVs carregados na retomada: {blocks_loaded}")
+                        
                     else:
                         raise RuntimeError(f"Invalid request status: {request.status}")
 
@@ -866,19 +878,22 @@ class Scheduler(Scheduler):
                 # Find a preemptible request. Requests with num_computed_token=0
                 # are new requests, and have no kv cache blocks. Thus, cannot
                 # be preempted
-                while requests_queue:
-                    preempted_req = requests_queue.pop()
-                    print(f"----testing preemption of {preempted_req.request_id} status={preempted_req.status}")
-                    if preempted_req.num_computed_tokens > 0:
+                
+                preempted_req = None
+                # Itera de trás para frente na fila
+                for i in range(len(requests_queue) - 1, -1, -1):
+                    req_to_test = requests_queue[i]
+                    print(f"----testing preemption of {req_to_test.request_id} status={req_to_test.status}")
+                    
+                    # Ignora quem não tem tokens na GPU
+                    if req_to_test.num_computed_tokens > 0:
+                        preempted_req = requests_queue.pop(i)
                         print(f"----can preempt {preempted_req.request_id}")
                         break
-                    else:
-                        # Cannot preempt a req which is not in memory
-                        preempted_req = None
 
-                if not requests_queue:
+                if not preempted_req:
                     # No other valid requests to preempt. Not enough kv blocks.
-                    print("[rr][step{self.sched_step}][_try_allocate_kv_blocks] cannot preempt to allocate blocks")
+                    print(f"[rr][step{self.sched_step}][_try_allocate_kv_blocks] cannot preempt to allocate blocks")
                     break
 
                 # Preempting the last (valid) request in the queue
@@ -937,6 +952,10 @@ class Scheduler(Scheduler):
         if self.log_stats:
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
         request.t_last = timestamp
+        
+        #Métricas para cálculo de preempçao e retomada
+        request.t_preempted_at = timestamp
+        request.step_preempted_at = self.sched_step
 
         print(f"[rr][step{self.sched_step}] preemption: {request.request_id}")
         print(f"[rr][step{self.sched_step}][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
