@@ -1,0 +1,8 @@
+echo "step lat batch_size token_budget decode_reqs prefill_reqs kv_blocks_used" > lats_test_data.txt; 
+
+awk '/batch_size:/{match($0,/\[step([0-9]+)\]/,s);match($0,/batch_size: ([0-9]+)/,b);match($0,/tokens_budget: ([0-9]+)/,t);match($0,/decode_reqs: ([0-9]+)/,dc);match($0,/prefill_reqs: ([0-9]+)/,pf);match($0,/kv_blocks_used: ([0-9]+)/,kv);bs[s[1]]=b[1];tb[s[1]]=t[1];dcc[s[1]]=dc[1];pff[s[1]]=pf[1];kvv[s[1]]=kv[1]} / lat:/{match($0,/\[step([0-9]+)\]/,s);match($0,/lat: ([0-9.]+)/,l);print s[1],l[1],bs[s[1]],tb[s[1]],dcc[s[1]],pff[s[1]],kvv[s[1]]}' < <(grep 'lat_prof' lat_profiling_dp1_tok2048.log) | tr '.' ',' | tail -n +2 >> lats_test_data.txt
+
+awk '/batch_size:/{match($0,/\[step([0-9]+)\]/,s);match($0,/batch_size: ([0-9]+)/,b);match($0,/tokens_budget: ([0-9]+)/,t);match($0,/decode_reqs: ([0-9]+)/,dc);match($0,/prefill_reqs: ([0-9]+)/,pf);match($0,/kv_blocks_used: ([0-9]+)/,kv);bs[s[1]]=b[1];tb[s[1]]=t[1];dcc[s[1]]=dc[1];pff[s[1]]=pf[1];kvv[s[1]]=kv[1]} / lat:/{match($0,/\[step([0-9]+)\]/,s);match($0,/lat: ([0-9.]+)/,l);print s[1],l[1],bs[s[1]],tb[s[1]],dcc[s[1]],pff[s[1]],kvv[s[1]]}' < <(grep 'lat_prof' lat_profiling_dp1_tok1024.log) | tr '.' ',' | tail -n +2 >> lats_test_data.txt
+
+awk '/batch_size:/{match($0,/\[step([0-9]+)\]/,s);match($0,/batch_size: ([0-9]+)/,b);match($0,/tokens_budget: ([0-9]+)/,t);match($0,/decode_reqs: ([0-9]+)/,dc);match($0,/prefill_reqs: ([0-9]+)/,pf);match($0,/kv_blocks_used: ([0-9]+)/,kv);bs[s[1]]=b[1];tb[s[1]]=t[1];dcc[s[1]]=dc[1];pff[s[1]]=pf[1];kvv[s[1]]=kv[1]} / lat:/{match($0,/\[step([0-9]+)\]/,s);match($0,/lat: ([0-9.]+)/,l);print s[1],l[1],bs[s[1]],tb[s[1]],dcc[s[1]],pff[s[1]],kvv[s[1]]}' < <(grep 'lat_prof' lat_profiling_dp1_tok512.log) | tr '.' ',' | tail -n +2 >> lats_test_data.txt
+

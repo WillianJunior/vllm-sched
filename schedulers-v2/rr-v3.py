@@ -50,7 +50,7 @@ class Scheduler(Scheduler):
         )
 
         # In number of generated decode tokens
-        self.quantum = 20
+        self.quantum = 2
 
         self.sched_step = 0
 
@@ -181,6 +181,9 @@ class Scheduler(Scheduler):
         # Política LVF (Largest-VLT-First) do RotaSched
         # Ordena a fila: maiores VLTs (urgentes) no início, menores/negativos (running) no final
         all_reqs_queue.sort(key=lambda req: self.calculate_vlt(req, t_now), reverse=True)
+
+        #if self.sched_step == 1:
+        #    self.max_num_running_reqs /= 2
 
         num_sched_reqs = 0
         while all_reqs_queue:

@@ -4,6 +4,14 @@
 
 
 # full batch, overmem, a lot of offloading space ERROR CASE
-/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
-/snfs1/llm-models/llama-3.2-3B-Instruct fcfs.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
+#/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.8 512 200 /snfs1/llm-models/llama-3.2-3B-Instruct 0 512 999 1 999 ./vllm_outputs
+#/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.8 256 200 /snfs1/llm-models/llama-3.2-3B-Instruct 0 512 999 1 999 ./vllm_outputs
+#/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.8 128 200 /snfs1/llm-models/llama-3.2-3B-Instruct 0 512 999 1 999 ./vllm_outputs
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.8 64 200 /snfs1/llm-models/llama-3.2-3B-Instruct 0 512 999 1 999 ./vllm_outputs
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.8 32 200 /snfs1/llm-models/llama-3.2-3B-Instruct 0 512 999 1 999 ./vllm_outputs
+/snfs1/llm-models/llama-3.2-3B-Instruct rr-v3.Scheduler schedulers-v2/ none 0.8 16 200 /snfs1/llm-models/llama-3.2-3B-Instruct 0 512 999 1 999 ./vllm_outputs
+
+
+
+#/snfs1/llm-models/llama-3.2-3B-Instruct fcfs.Scheduler schedulers-v2/ 20 0.3 10 2000 /snfs1/llm-models/llama-3.2-3B-Instruct 0 15 999 1 999 ./vllm_outputs
 

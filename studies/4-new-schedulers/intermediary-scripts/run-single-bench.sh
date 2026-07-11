@@ -62,7 +62,7 @@ if [ "$DO_THROUGHPUT" = "1" ]; then
         --request-rate $REQUEST_RATE --burstiness $BURSTNESS \
         --max-concurrency $MAX_CONCUR \
         --random-input-len 1 --random-output-len 1200 --ignore-eos \
-        $JSON_FLAGS --result-filename $BENCH_FILENAME
+	$JSON_FLAGS --result-filename $BENCH_FILENAME
 fi
 
 if [ "$DO_SHARE" = "1" ]; then
