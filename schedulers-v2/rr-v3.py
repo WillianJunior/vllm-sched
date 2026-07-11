@@ -60,14 +60,14 @@ class Scheduler(Scheduler):
         setattr(Request, "t_arr", 0.0)
         setattr(Request, "t_run", 0.0)
         setattr(Request, "t_last", 0.0)
+        
         # Parâmetros do SuperInfer
         self.ttft_slo = float(os.environ.get('VLT_TTFT_SLO', 5.0))
         self.tbt_slo = float(os.environ.get('VLT_TBT_SLO', 0.05))
         
-        # Parâmetros do Optuna
-        self.alpha = float(os.environ.get('VLT_ALPHA', 2.0))
-        self.beta_b = float(os.environ.get('VLT_BETA_B', 0.1))
-        self.beta_f = float(os.environ.get('VLT_BETA_F', 0.4))
+        self.alpha = 3.0       # Sensitive Weight for the ITL/TBT
+        self.beta_b = -1.0     # Coeficientes de Tolerância para o TTFT
+        self.beta_f = 0.40636379967548086      # Coeficientes de Tolerância para o ITL
 
         # Will: bad bug fix...
         # waiting_remote_kvs changes to PREEMPTED when available for execution.
@@ -333,12 +333,16 @@ class Scheduler(Scheduler):
                         time_spent_out = t_now - getattr(request, 't_preempted_at', t_now)
                         steps_spent_out = self.sched_step - getattr(request, 'step_preempted_at', self.sched_step)
                         
-                        blocks_loaded = len(new_blocks) if new_blocks else 0
+                        # Recupera os tokens que ela tinha e os que o sistema conseguiu resgatar agora
+                        tokens_before = getattr(request, 'tokens_at_preemption', 0)
+                        tokens_now = request.num_computed_tokens
+                        tokens_lost = tokens_before - tokens_now
                         
                         print(f"[METRICS-RECOVERY][step{self.sched_step}][{request_id}] "
                               f"Tempo fora: {time_spent_out:.4f}s | "
                               f"Steps fora: {steps_spent_out} | "
-                              f"Blocos KVs carregados na retomada: {blocks_loaded}")
+                              f"Tokens no Cache: {tokens_now}/{tokens_before} "
+                              f"(Recomputando {tokens_lost} tokens)")
                         
                     else:
                         raise RuntimeError(f"Invalid request status: {request.status}")
@@ -945,6 +949,12 @@ class Scheduler(Scheduler):
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
+        
+        request.t_preempted_at = timestamp
+        request.step_preempted_at = self.sched_step
+        # Salva o tamanho do contexto que ela tinha conquistado na GPU
+        request.tokens_at_preemption = request.num_computed_tokens
+        
         request.num_computed_tokens = 0
         if request.spec_token_ids:
             request.spec_token_ids = []
@@ -953,9 +963,9 @@ class Scheduler(Scheduler):
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
         request.t_last = timestamp
         
-        #Métricas para cálculo de preempçao e retomada
-        request.t_preempted_at = timestamp
-        request.step_preempted_at = self.sched_step
+        # #Métricas para cálculo de preempçao e retomada
+        # request.t_preempted_at = timestamp
+        # request.step_preempted_at = self.sched_step
 
         print(f"[rr][step{self.sched_step}] preemption: {request.request_id}")
         print(f"[rr][step{self.sched_step}][preemption] self.kv_cache_manager.block_pool.get_num_free_blocks() after: {self.kv_cache_manager.block_pool.get_num_free_blocks()}")
