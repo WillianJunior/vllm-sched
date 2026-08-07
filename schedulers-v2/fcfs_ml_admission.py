@@ -276,15 +276,28 @@ class Scheduler(SchedulerInterface):
                 vllm_config=self.vllm_config,
             )
         
+        self.is_profiling = False
         self.ml_model = None
         # Substitua pelo caminho absoluto real onde você salvou o modelo
-        model_path = "../studies/5-lat-budget/lgbm_oraculo.pkl" 
+        model_path = "lgbm_model.pkl" 
         
-        if os.path.exists(model_path):
-            self.ml_model = joblib.load(model_path)
-            print(f"[ML-ADMISSION] Modelo carregado com sucesso: {model_path}")
+        if not self.is_profiling:
+            if os.path.exists(model_path):
+                self.ml_model = joblib.load(model_path)
+                print(f"[ML-ADMISSION] Modelo carregado com sucesso: {model_path}")
+            else:
+                print(f"[ML-ADMISSION] AVISO: Modelo não encontrado em {model_path}. Operando sem ML.")
         else:
-            print(f"[ML-ADMISSION] AVISO: Modelo não encontrado em {model_path}. Operando sem ML.")
+            print(f"[ML-ADMISSION] no model load. Profiling mode")
+
+        self.sched_step = 0
+        self.prev_sched_time = time.monotonic()
+
+        self.prev_batch_size = -1
+        self.prev_used_token_budget = -1
+        self.prev_decode_reqs = -1
+        self.prev_prefill_reqs = -1
+        self.prev_used_blocks = -1
 
     def _mamba_block_aligned_split(
         self,
@@ -361,6 +374,12 @@ class Scheduler(SchedulerInterface):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+
+        if self.is_profiling or scheduled_timestamp-self.prev_sched_time > 0.050:
+            print(f"[sched][lat_prof][step{self.sched_step}] lat: {scheduled_timestamp-self.prev_sched_time}")
+            print(f"[sched][lat_prof][step{self.sched_step}] used_tokens_budget: {self.prev_used_token_budget} kv_blocks_used: {self.prev_used_blocks} decode_reqs: {self.prev_decode_reqs} batch_size: {self.prev_batch_size} prefill_reqs: {self.prev_prefill_reqs}")
+        self.prev_sched_time = scheduled_timestamp
+        self.sched_step += 1
 
         DP_factor = 1
 
@@ -546,6 +565,8 @@ class Scheduler(SchedulerInterface):
         # skipped and put back at the head of the waiting queue later
         skipped_waiting_requests = create_request_queue(self.policy)
 
+        num_decode_reqs = len(self.running)
+
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
@@ -685,23 +706,19 @@ class Scheduler(SchedulerInterface):
                     assert num_new_tokens > 0
                     
                     if getattr(self, 'ml_model', None) is not None:
-                        decode_reqs = len(self.running)
-                        prefill_reqs = 1 
-                        batch_size = decode_reqs + prefill_reqs
+                        used_token_budget = self.max_num_scheduled_tokens - token_budget
+                        decode_reqs = num_decode_reqs
+                        prefill_reqs = len(self.running) - num_decode_reqs
+                        batch_size = len(self.running)
+                        kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
                         
-                        try:
-                            num_gpu_blocks = self.kv_cache_manager.block_pool.num_gpu_blocks
-                            free_blocks = self.kv_cache_manager.block_pool.get_num_free_blocks()
-                            kv_blocks_used = num_gpu_blocks - 1 - free_blocks
-                        except AttributeError:
-                            # Fallback de segurança caso a API mude
-                            kv_blocks_used = 0 
-
-                        features = [[token_budget, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]]
+                        features = [[used_token_budget, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]]
                         is_over_slo = self.ml_model.predict(features)[0]
                         
-                        if is_over_slo == 1:
-                            print(f"[ML-ADMISSION] Risco de SLO. Barrando req {request.request_id}.")
+                        if is_over_slo:
+                            print(f"[ML-ADMISSION][step{self.sched_step}] Risco de SLO. Barrando req {request.request_id}.")
+                            print(f"[ML-ADMISSION][step{self.sched_step}] used_tokens_budget: {self.max_num_scheduled_tokens - token_budget} kv_blocks_used: { self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()} decode_reqs: {num_decode_reqs} batch_size: {len(self.running)} prefill_reqs: {len(self.running) - num_decode_reqs}")
+
                             break # Interrompe a admissão
 
                     # Schedule encoder inputs.
@@ -934,6 +951,12 @@ class Scheduler(SchedulerInterface):
         #print(f"[fcfs] sched_time {time.monotonic() - scheduled_timestamp}")
         if len(preempted_reqs) > 0:
             print("[sched][PREEMPTION] aaaaaaaaaaaaaaa num reqs preempted: {len(preempted_reqs)}")
+
+        self.prev_batch_size = len(self.running)
+        self.prev_used_token_budget = self.max_num_scheduled_tokens - token_budget
+        self.prev_decode_reqs = num_decode_reqs
+        self.prev_prefill_reqs = len(self.running) - num_decode_reqs
+        self.prev_used_blocks = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
 
         return scheduler_output
 

@@ -9,7 +9,7 @@ export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/schedul
 MNS=$1
 SCHED=""
 #SCHED="--scheduler-cls $1"
-#SCHED="--scheduler-cls fcfs_max_tokens2.Scheduler"
+#SCHED="--scheduler-cls fcfs_ml_admission.Scheduler"
 SCHED="--scheduler-cls fcfs_profile_lat.Scheduler"
 #OFFLOADING="--kv-offloading-size 4"
 
@@ -21,6 +21,7 @@ SCHED="--scheduler-cls fcfs_profile_lat.Scheduler"
 # mem for 3090: 0.29
 KV_MEM=0.95
 
+export VLLM_LOG_STATS_INTERVAL=1
 vllm serve /snfs1/llm-models/llama-3.2-3B-Instruct/ --host localhost --port 8000 --gpu-memory-utilization $KV_MEM --max-model-len 8000 --max-num-seqs $MNS --tensor-parallel-size 1 $OFFLOADING --disable-hybrid-kv-cache-manager $SCHED --no-enable-prefix-caching --max-num-batched-tokens $2 --disable-uvicorn-access-log
 #new_scheduler.Scheduler
 

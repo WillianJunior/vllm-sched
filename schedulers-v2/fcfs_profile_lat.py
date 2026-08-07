@@ -274,6 +274,7 @@ class Scheduler(SchedulerInterface):
         # logging lats
         self.prev_sched_time = time.monotonic()
         self.sched_step = 0
+        self.log_profile_lat = False
 
     def _mamba_block_aligned_split(
         self,
@@ -350,8 +351,9 @@ class Scheduler(SchedulerInterface):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
-
-        print(f"[sched][lat_prof][step{self.sched_step}] lat: {scheduled_timestamp-self.prev_sched_time}")
+        
+        if self.log_profile_lat:
+            print(f"[sched][lat_prof][step{self.sched_step}] lat: {scheduled_timestamp-self.prev_sched_time}")
         self.prev_sched_time = scheduled_timestamp
         self.sched_step += 1
 
@@ -908,7 +910,8 @@ class Scheduler(SchedulerInterface):
 
         #print(f"[fcfs] sched_time {time.monotonic() - scheduled_timestamp}")
         used_blocks = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
-        print(f"[sched][lat_prof][step{self.sched_step}] batch_size: {len(self.running)} tokens_budget: {token_budget} kv_blocks_used: {used_blocks} decode_reqs: {num_decode_reqs} prefill_reqs: {len(self.running) - num_decode_reqs}")
+        if self.log_profile_lat:
+            print(f"[sched][lat_prof][step{self.sched_step}] batch_size: {len(self.running)} tokens_budget: {token_budget} kv_blocks_used: {used_blocks} decode_reqs: {num_decode_reqs} prefill_reqs: {len(self.running) - num_decode_reqs}")
 
         return scheduler_output
 
