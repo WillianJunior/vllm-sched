@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import joblib
 import pandas as pd
 import numpy as np
 from lightgbm import LGBMRegressor
@@ -234,3 +235,7 @@ importance = importance.sort_values(
 
 print("\ngain importance ------------------------")
 print(importance)
+
+# Salva o modelo em disco
+joblib.dump(model, 'lgbm_oraculo.pkl')
+print("\nModelo exportado com sucesso: lgbm_oraculo.pkl")

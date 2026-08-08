@@ -277,8 +277,7 @@ class Scheduler(SchedulerInterface):
             )
         
         self.ml_model = None
-        # Substitua pelo caminho absoluto real onde você salvou o modelo
-        model_path = "../studies/5-lat-budget/lgbm_oraculo.pkl" 
+        model_path = "/snfs2/guilherme.farany/vllm-sched/studies/5-lat-budget/lgbm_oraculo.pkl" 
         
         if os.path.exists(model_path):
             self.ml_model = joblib.load(model_path)

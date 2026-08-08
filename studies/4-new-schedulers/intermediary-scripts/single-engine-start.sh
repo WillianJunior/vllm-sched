@@ -33,7 +33,7 @@ mkdir -p $TMP_OUTPUTS_PATH
 MODEL_NAME=$(basename $MODEL)
 
 if [[ "$SCHEDULER" == "none" ]]; then
-  SCHEDULER_PARAM=""
+  SCHEDULER_PARAM="--scheduler-cls vllm.v1.core.sched.scheduler.Scheduler"
 else
   SCHEDULER_PARAM="--scheduler-cls $SCHEDULER"
 fi
@@ -51,6 +51,8 @@ MAX_MODEL_LEN_PARAM="--max-model-len $MAX_MODEL_LEN"
 MNS_PARAM="--max-num-seqs $MNS"
 TP_PARAM="--tensor-parallel-size 1"
 
+CHUNKED_PREFILL_PARAM="--enable-chunked-prefill --max-num-batched-tokens 512"
+
 # Adicão do MNS (Max Number of Seqs) e o timestamp atual para garantir que o nome seja único
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 BASE_FILENAME=${MODEL_NAME}-${SCHEDULER}-offld${OFFLOADING}-kvmem${KV_MEM}-mns${MNS}-${TIMESTAMP}
@@ -58,14 +60,7 @@ SERVER_FILENAME=vllm-${BASE_FILENAME}.log
 
 export VLLM_SERVER_DEV_MODE=1 # allow reset prefix caching
 
-if [ "$MNS" = "32" ]; then
-    #export VLT_TBT_SLO=0.0162271805273834
-    export VLT_TBT_SLO=0.012
-elif [ "$MNS" = "128" ]; then
-    export VLT_TBT_SLO=0.0619954794962867
-else
-    export VLT_TBT_SLO=0.050  # Padrão
-fi
+export VLT_TBT_SLO=0.050  # Padrão
 
 echo ">>> Iniciando SuperInfer com TBT_SLO configurado para: $VLT_TBT_SLO segundos <<<"
 

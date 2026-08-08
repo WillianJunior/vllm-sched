@@ -1,16 +1,15 @@
 module load anaconda3.2023.09-0
 
-conda activate ../../envs/vllm-0.16.0/
+conda activate ../../../envs/vllm-0.16.0/
 
 export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/studies/4-new-schedulers:$PYTHONPATH"
 
-export PYTHONPATH="/sonic_home/willianjunior/vllm-segment/git/vllm-sched/schedulers-v2:$PYTHONPATH"
+export PYTHONPATH="../../schedulers-v2:$PYTHONPATH"
 
 MNS=$1
-SCHED=""
 #SCHED="--scheduler-cls $1"
 #SCHED="--scheduler-cls fcfs_max_tokens2.Scheduler"
-SCHED="--scheduler-cls fcfs_profile_lat.Scheduler"
+SCHED="--scheduler-cls fcfs_ml_admission.Scheduler"
 #OFFLOADING="--kv-offloading-size 4"
 
 # For 6 reqs:

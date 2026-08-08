@@ -535,7 +535,7 @@ class Scheduler(Scheduler):
             self._update_after_schedule(scheduler_output)
 
         print(f"[rr][step{self.sched_step}] sched_time {time.monotonic() - scheduled_timestamp}")
-        print(f"[rr][step{self.sched_step}] scheduler_output_after {scheduler_output}")
+        #print(f"[rr][step{self.sched_step}] scheduler_output_after {scheduler_output}")
 
         #print(f"[rr] done scheduling")
         self.sched_step += 1
