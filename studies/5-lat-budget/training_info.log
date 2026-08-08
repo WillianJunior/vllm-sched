@@ -1,0 +1,107 @@
+        step       lat  batch_size  token_budget  decode_reqs  prefill_reqs  kv_blocks_used
+1          2  0.053320           1             0            1             0               2
+2          3  0.003545           1             1            1             0               2
+3          4  0.000864           1             0            1             0               2
+4          5  0.005661           1             1            1             0               2
+5          6  0.000517           1             0            1             0               2
+...      ...       ...         ...           ...          ...           ...             ...
+11943  11944  0.005848           1             1            1             0             109
+11944  11945  0.000554           1             0            1             0             109
+11945  11946  0.005865           1             1            1             0             109
+11946  11947  0.000515           1             0            1             0             109
+11947  11948  0.005895           1             1            1             0             109
+
+[11945 rows x 7 columns]
+Filtered dataset size: 8698
+      step       lat  batch_size  token_budget  decode_reqs  prefill_reqs  kv_blocks_used
+0     2868  0.067096         397           524          395             2            8853
+1     9918  0.016637         151           151          151             0            5042
+2     1656  0.049270         396          1161          395             1            8883
+3     5061  0.010409         400             1          400             0            8667
+4      557  0.009795         399           100          399             0            6272
+...    ...       ...         ...           ...          ...           ...             ...
+8693  5634  0.038963         399           946          396             3            8620
+8694  2738  0.039871         399           396          399             0            8513
+8695  3818  0.045390         399           454          396             3            8686
+8696  8079  0.008589         399             1          399             0            8701
+8697  8884  0.056383         399           610          396             3            9462
+
+[8698 rows x 7 columns]
+(0.000233, 0.0118]: 2000
+(0.0118, 0.0232]: 2001
+(0.0232, 0.0346]: 770
+(0.0346, 0.046]: 1655
+(0.046, 0.0573]: 922
+(0.0573, 0.0687]: 938
+(0.0687, 0.0801]: 221
+(0.0801, 0.0915]: 89
+(0.0915, 0.103]: 68
+(0.103, 0.114]: 19
+(0.114, 0.126]: 3
+(0.126, 0.137]: 2
+(0.137, 0.148]: 1
+(0.148, 0.16]: 0
+(0.16, 0.171]: 0
+(0.171, 0.182]: 0
+(0.182, 0.194]: 0
+(0.194, 0.205]: 0
+(0.205, 0.217]: 0
+(0.217, 0.228]: 9
+Training samples  : 6088
+Validation samples: 1740
+Test samples      : 870
+/sonic_home/willianjunior/vllm-segment/git/vllm-sched/envs/vllm-0.16.0/lib/python3.11/site-packages/lightgbm/sklearn.py:1106: LGBMDeprecationWarning: The argument 'eval_set' is deprecated, use 'eval_X' and 'eval_y' instead.
+  eval_set = _validate_eval_set_Xy(eval_set=eval_set, eval_X=eval_X, eval_y=eval_y)
+[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.000231 seconds.
+You can set `force_col_wise=true` to remove the overhead.
+[LightGBM] [Info] Total Bins 808
+[LightGBM] [Info] Number of data points in the train set: 6088, number of used features: 5
+[LightGBM] [Info] Start training from score 0.031875
+
+Val  MAE: 0.00745421
+Test MAE: 0.00758073
+
+Feature importance:
+token_budget   : 1465
+decode_reqs    : 267
+prefill_reqs   : 160
+kv_blocks_used : 919
+batch_size     : 189
+Mean latency: 0.0321
+MAE: 0.0076
+Relative MAE: 0.2362
+Training samples  : 6088
+Validation samples: 1740
+Test samples      : 870
+[LightGBM] [Info] Number of positive: 1387, number of negative: 4701
+[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.000269 seconds.
+You can set `force_col_wise=true` to remove the overhead.
+[LightGBM] [Info] Total Bins 808
+[LightGBM] [Info] Number of data points in the train set: 6088, number of used features: 5
+[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.500000 -> initscore=0.000000
+[LightGBM] [Info] Start training from score 0.000000
+0.6827586206896552
+              precision    recall  f1-score   support
+
+       False       0.90      0.66      0.76       674
+        True       0.39      0.74      0.51       196
+
+    accuracy                           0.68       870
+   macro avg       0.65      0.70      0.64       870
+weighted avg       0.79      0.68      0.71       870
+
+          feature  importance
+0    token_budget        4985
+3  kv_blocks_used        4955
+1     decode_reqs         951
+4      batch_size         879
+2    prefill_reqs         630
+
+gain importance ------------------------
+          feature    importance
+0    token_budget  41911.622025
+3  kv_blocks_used   7750.793804
+1     decode_reqs   1568.042526
+4      batch_size   1549.028144
+2    prefill_reqs    998.648568
+

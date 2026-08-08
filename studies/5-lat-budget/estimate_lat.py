@@ -6,12 +6,13 @@ import numpy as np
 from lightgbm import LGBMRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
+import pickle
 
 # ---------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------
 
-DATA_FILE = "lats_test_data.txt"   # Change to your filename
+DATA_FILE = "training_data.txt"   # Change to your filename
 RANDOM_STATE = 42
 
 # ---------------------------------------------------------------------
@@ -20,17 +21,24 @@ RANDOM_STATE = 42
 
 # The file is tab-separated and uses comma as decimal separator.
 #df = pd.read_csv(DATA_FILE, sep="\t", decimal=",")
-df = pd.read_csv(DATA_FILE, sep=r"\s+", decimal=",", engine="python")
+df = pd.read_csv(DATA_FILE, sep=r"\s+", decimal=".", engine="python")
 
 # Optional: normalize column names
 df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+df = df.apply(pd.to_numeric, errors="coerce")
+df = df.dropna()
 
 #df = df.iloc[:4000].copy()
 
 df["batch_size"] = df["decode_reqs"] + df["prefill_reqs"]
 
-# Data is shifted...
-df["token_budget"] = df["token_budget"].shift(1)
+# Data is shifted. latency reporting is broken since scheduler is async
+# workarround: shift by 1. most of the times the latency of a step is actually from the previous step...
+df["lat"] = df["lat"].shift(1)
+df = df.iloc[1:]
+
+print(df)
 
 N_BINS = 20
 MAX_PER_BUCKET = 2000
@@ -239,3 +247,8 @@ print(importance)
 # Salva o modelo em disco
 joblib.dump(model, 'lgbm_oraculo.pkl')
 print("\nModelo exportado com sucesso: lgbm_oraculo.pkl")
+
+print(model.predict([[4000, 500, 398, 398, 0]]))
+
+with open("lgbm_model.pkl", "wb") as f:
+    pickle.dump(model, f)
