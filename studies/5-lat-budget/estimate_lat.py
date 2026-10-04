@@ -35,8 +35,15 @@ df["batch_size"] = df["decode_reqs"] + df["prefill_reqs"]
 
 # Data is shifted. latency reporting is broken since scheduler is async
 # workarround: shift by 1. most of the times the latency of a step is actually from the previous step...
-df["lat"] = df["lat"].shift(1)
-df = df.iloc[1:]
+# df["lat"] = df["lat"].shift(1)
+# df = df.iloc[1:]
+
+df["overhead_ms"] = df["lat_escalonador"] - df["lat_gpu"]
+
+overhead_p95 = df["overhead_ms"].quantile(0.99)
+print(f"\n[!] Overhead P95 do sistema: {overhead_p95:.4f} ms")
+print(f"[!] Sugestão de corte pro Escalonador: 55ms - {overhead_p95:.4f} ms\n")
+# ----------------------------------------------
 
 print(df)
 
@@ -44,10 +51,10 @@ N_BINS = 20
 MAX_PER_BUCKET = 2000
 
 # Compute bucket edges
-counts, edges = np.histogram(df["lat"], bins=N_BINS)
+counts, edges = np.histogram(df["lat_gpu"], bins=N_BINS)
 
 # Assign each row to a bucket (0..19)
-bucket = np.digitize(df["lat"], edges[1:-1], right=False)
+bucket = np.digitize(df["lat_gpu"], edges[1:-1], right=False)
 df["bucket"] = bucket
 
 # Keep all rows except cap buckets 0 and 1
@@ -79,12 +86,12 @@ X = df[["token_budget", "decode_reqs", "prefill_reqs", "kv_blocks_used", "batch_
 #X = df[["token_budget"]]
 
 
-y = df["lat"]
+y = df["lat_gpu"]
 #y = df["is_over_slo"]
 
 N_BINS = 20
 
-bins = pd.cut(df["lat"], bins=N_BINS)
+bins = pd.cut(df["lat_gpu"], bins=N_BINS)
 
 hist = bins.value_counts(sort=False)
 
@@ -182,7 +189,14 @@ model = LGBMClassifier(
     class_weight="balanced",
 )
 
-df["is_over_slo"] = df["lat"] > 0.050
+limite_gpu_ms = 39.23112703
+
+
+print(f"\n[!] Treinando Classificador com limite de corte na GPU de: {limite_gpu_ms:.4f} ms")
+
+# O classificador agora aprende a barrar requisições considerando o engasgo real da máquina
+df["is_over_slo"] = (df["lat_gpu"] > limite_gpu_ms)
+
 y = df["is_over_slo"]
 
 X_trainval, X_test, y_trainval, y_test = train_test_split(
@@ -190,15 +204,15 @@ X_trainval, X_test, y_trainval, y_test = train_test_split(
     y,
     test_size=0.10,
     random_state=RANDOM_STATE,
+    stratify=y
 )
 
-# Validation should be 20% of the total dataset.
-# Since trainval contains 90%, split off 20/90 = 2/9.
 X_train, X_val, y_train, y_val = train_test_split(
     X_trainval,
     y_trainval,
     test_size=2/9,
     random_state=RANDOM_STATE,
+    stratify=y_trainval
 )
 
 print(f"Training samples  : {len(X_train)}")

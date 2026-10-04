@@ -276,10 +276,10 @@ class Scheduler(SchedulerInterface):
                 vllm_config=self.vllm_config,
             )
         
-        self.is_profiling = False
+        self.is_profiling = os.environ.get("VLLM_PROFILING", "0") == "1"
         self.ml_model = None
         # Substitua pelo caminho absoluto real onde você salvou o modelo
-        model_path = "lgbm_model.pkl" 
+        model_path = "/snfs2/guilherme.farany/vllm-sched/studies/5-lat-budget/lgbm_oraculo.pkl" 
         
         if not self.is_profiling:
             if os.path.exists(model_path):
@@ -375,9 +375,9 @@ class Scheduler(SchedulerInterface):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
-        if self.is_profiling or scheduled_timestamp-self.prev_sched_time > 0.050:
-            print(f"[sched][lat_prof][step{self.sched_step}] lat: {scheduled_timestamp-self.prev_sched_time}")
-            print(f"[sched][lat_prof][step{self.sched_step}] used_tokens_budget: {self.prev_used_token_budget} kv_blocks_used: {self.prev_used_blocks} decode_reqs: {self.prev_decode_reqs} batch_size: {self.prev_batch_size} prefill_reqs: {self.prev_prefill_reqs}")
+        if self.is_profiling or scheduled_timestamp-self.prev_sched_time > 0.058:
+            print(f"[sched][lat_prof][step{self.sched_step}] lat: {scheduled_timestamp-self.prev_sched_time}", flush=True)
+            print(f"[sched][lat_prof][step{self.sched_step}] used_tokens_budget: {self.prev_used_token_budget} kv_blocks_used: {self.prev_used_blocks} decode_reqs: {self.prev_decode_reqs} batch_size: {self.prev_batch_size} prefill_reqs: {self.prev_prefill_reqs}", flush = True)
         self.prev_sched_time = scheduled_timestamp
         self.sched_step += 1
 
@@ -706,20 +706,42 @@ class Scheduler(SchedulerInterface):
                     assert num_new_tokens > 0
                     
                     if getattr(self, 'ml_model', None) is not None:
-                        used_token_budget = self.max_num_scheduled_tokens - token_budget
-                        decode_reqs = num_decode_reqs
-                        prefill_reqs = len(self.running) - num_decode_reqs
-                        batch_size = len(self.running)
-                        kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
-                        
-                        features = [[used_token_budget, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]]
-                        is_over_slo = self.ml_model.predict(features)[0]
-                        
-                        if is_over_slo:
-                            print(f"[ML-ADMISSION][step{self.sched_step}] Risco de SLO. Barrando req {request.request_id}.")
-                            print(f"[ML-ADMISSION][step{self.sched_step}] used_tokens_budget: {self.max_num_scheduled_tokens - token_budget} kv_blocks_used: { self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()} decode_reqs: {num_decode_reqs} batch_size: {len(self.running)} prefill_reqs: {len(self.running) - num_decode_reqs}")
+                        if num_decode_reqs > 0:
+                            used_token_budget = (self.max_num_scheduled_tokens - token_budget) + num_new_tokens
+                            
+                            if request.num_computed_tokens == 0:
+                                prefill_reqs = (len(self.running) - num_decode_reqs) + 1
+                                decode_reqs = num_decode_reqs
+                            else:
+                                prefill_reqs = len(self.running) - num_decode_reqs
+                                decode_reqs = num_decode_reqs + 1
+                                
+                            batch_size = len(self.running) + 1
+                            kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
+                            
+                            features = [[used_token_budget, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]]
+                            #is_over_slo = self.ml_model.predict(features)[0]
+                            
+                            # Usamos predict_proba para ter a margem de controle
+                            prob_estourar = self.ml_model.predict_proba(features)[0][1]
+                                                        
+                            # # Threshold dinâmico relaxado (exigindo alta confiança para barrar)
+                            if self.sched_step <= 15:
+                                threshold = 1.1
+                            elif decode_reqs >= 300:
+                                threshold = 0.30  # Máquina cheia
+                            elif decode_reqs >= 150:
+                                threshold = 0.60  
+                            else:
+                                threshold = 0.90  # Máquina leve
+                            
+                            is_over_slo = prob_estourar > threshold
+                            
+                            if is_over_slo:
+                                print(f"[ML-ADMISSION][step{self.sched_step}] Risco de SLO ({prob_estourar*100:.1f}% > {threshold*100:.1f}% limite). Barrando req {request.request_id}.")
+                                print(f"[ML-ADMISSION][step{self.sched_step}] used_tokens_budget: {self.max_num_scheduled_tokens - token_budget} kv_blocks_used: { self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()} decode_reqs: {num_decode_reqs} batch_size: {len(self.running)} prefill_reqs: {len(self.running) - num_decode_reqs}")
 
-                            break # Interrompe a admissão
+                                break # Interrompe a admissão
 
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
@@ -823,6 +845,21 @@ class Scheduler(SchedulerInterface):
                     scheduled_new_reqs.append(request)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
+                    
+                    # t_now = time.monotonic()
+                    # time_spent_out = t_now - getattr(request, 't_preempted_at', t_now)
+                    # steps_spent_out = (self.sched_step - 1) - getattr(request, 'step_preempted_at', self.sched_step - 1)
+                    
+                    # tokens_before = getattr(request, 'tokens_at_preemption', 0)
+                    # tokens_now = num_computed_tokens  # Tokens recuperados localmente no cache
+                    # tokens_lost = tokens_before - tokens_now
+                    
+                    # print(f"[METRICS-RECOVERY][step{self.sched_step - 1}][{request_id}] "
+                    #       f"Tempo fora: {time_spent_out:.4f}s | "
+                    #       f"Steps fora: {steps_spent_out} | "
+                    #       f"Tokens no Cache: {tokens_now}/{tokens_before} "
+                    #       f"(Recomputando {tokens_lost} tokens)", flush=True)
+                    
                 else:
                     raise RuntimeError(f"Invalid request status: {request.status}")
 
@@ -972,6 +1009,11 @@ class Scheduler(SchedulerInterface):
         self.kv_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         request.status = RequestStatus.PREEMPTED
+        
+        # request.t_preempted_at = timestamp
+        # request.step_preempted_at = getattr(self, 'sched_step', 1) - 1
+        # request.tokens_at_preemption = request.num_computed_tokens
+        
         request.num_computed_tokens = 0
         if request.spec_token_ids:
             request.spec_token_ids = []
@@ -1784,6 +1826,14 @@ class Scheduler(SchedulerInterface):
         self, request: Request, delay_free_blocks: bool = False
     ) -> dict[str, Any] | None:
         assert request.is_finished()
+
+        # req_id = request.request_id
+        # if hasattr(request, 'step_list'):
+        #     steps_str = ",".join(map(str, request.step_list))
+        #     # Latência total (TPOT aproximação / Tempo de vida da requisição) em milissegundos
+        #     # Usando time.time() para bater com o relógio do request.arrival_time (Unix epoch)
+        #     lat_total_ms = (time.time() - request.arrival_time) * 1000.0
+        #     print(f"[req_trace] req_id: {req_id} lat_total_ms: {lat_total_ms:.4f} steps: [{steps_str}]", flush=True)
 
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
