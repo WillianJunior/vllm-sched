@@ -26,7 +26,11 @@ BURSTNESS=0.3
 MAX_CONCUR=400
 
 DO_RANDOM=0
-DO_SHARE=1
+DO_SHARE=0
+DO_MULTITURN=1
+
+REQUEST_RATE=${REQUEST_RATE:-4.0}
+BENCHMARK_DURATION=${BENCHMARK_DURATION:-1800}
 
 if [ "$DO_RANDOM" = "1" ]; then
 vllm bench serve \
@@ -75,4 +79,56 @@ with open(file_path, 'w') as f:
     json.dump(data, f, indent=4)
 "
 echo "Benchmark processado e salvo com sucesso em results/$RESULT_FILENAME"
+fi
+
+if [ "$DO_MULTITURN" = "1" ]; then
+    SHAREGPT_JSON="$DATASET_PATH/ShareGPT_V3_unfiltered_cleaned_split.json"
+    SHAREGPT_JSONL="$DATASET_PATH/ShareGPT_V3_multiturn_clean.jsonl"
+
+    if [ ! -f "$SHAREGPT_JSONL" ] || [ "${FORCE_REGEN_DATASET:-0}" = "1" ]; then
+        echo "Gerando dataset multi-turn JSONL filtrado a partir de $SHAREGPT_JSON..."
+        python3 -c '
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+for i, x in enumerate(data):
+    turns = [{"text": m["value"]} for m in x.get("conversations", []) if m.get("from") in ("human", "user") and m.get("value", "").strip()]
+    if len(turns) >= 2:
+        # Limita caracteres totais da conversa para prevenir context overflow (> 8000 tokens)
+        total_chars = sum(len(m.get("value", "")) for m in x.get("conversations", []))
+        if total_chars <= 18000:
+            print(json.dumps({"session_id": x.get("id", str(i)), "turns": turns}, ensure_ascii=False))
+' "$SHAREGPT_JSON" > "$SHAREGPT_JSONL"
+        echo "Dataset multi-turn JSONL gerado com sucesso em $SHAREGPT_JSONL"
+    fi
+
+    which aiperf >/dev/null 2>&1 || pip install aiperf
+
+    ARTIFACT_DIR="results/${SCHEDULER_NAME}_aiperf_${TIMESTAMP}"
+    mkdir -p "$ARTIFACT_DIR"
+
+    echo "Iniciando benchmark multi-turn com AIPerf..."
+    aiperf profile \
+        --model "$MODEL" \
+        --endpoint-type chat \
+        --url http://localhost:8000 \
+        --streaming \
+        --input-file "$SHAREGPT_JSONL" \
+        --custom-dataset-type multi_turn \
+        --goodput "inter_token_latency:60" \
+        --request-rate 4.0 \
+        --arrival-pattern constant \
+        --benchmark-duration 1800 \
+        --random-seed 42 \
+        --artifact-dir "$ARTIFACT_DIR"
+
+    echo "Benchmark AIPerf Multi-Turn finalizado. Artefatos salvos em $ARTIFACT_DIR"
+
+    echo "Convertendo métricas do AIPerf para o formato padrão do projeto em results/$RESULT_FILENAME..."
+    python3 "$GIT_ROOT_PATH/studies/5-lat-budget/export_aiperf_to_legacy.py" \
+        --artifact-dir "$ARTIFACT_DIR" \
+        --output-file "results/$RESULT_FILENAME" \
+        --model "$MODEL" \
+        --concurrency "$CONCURRENCY"
 fi

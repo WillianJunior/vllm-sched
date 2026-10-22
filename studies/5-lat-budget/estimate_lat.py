@@ -9,10 +9,10 @@ from sklearn.model_selection import train_test_split
 import pickle
 
 # ---------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------
+import os
 
-DATA_FILE = "training_data.txt"   # Change to your filename
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.environ.get("VLLM_TRAINING_DATA", os.path.join(SCRIPT_DIR, "training_data.txt"))
 RANDOM_STATE = 42
 
 # ---------------------------------------------------------------------
@@ -82,12 +82,16 @@ print(f"Filtered dataset size: {len(df)}")
 print(df)
 
 # Features and target
-X = df[["token_budget", "decode_reqs", "prefill_reqs", "kv_blocks_used", "batch_size"]]
+X = df[["token_budget", "decode_reqs", "prefill_reqs", "kv_blocks_used", "batch_size", "kv_cache_usage"]]
 #X = df[["token_budget"]]
 
 
-y = df["lat_gpu"]
-#y = df["is_over_slo"]
+y = df["lat_gpu"].copy()
+preemption_penalty = float(os.environ.get("VLLM_PREEMPTION_PENALTY", "50.0"))
+if "num_preemptions" in df.columns:
+    preempt_mask = df["num_preemptions"] > 0
+    y.loc[preempt_mask] += preemption_penalty
+    print(f"\n[!] Penalidade de preempção (+{preemption_penalty:.1f} ms) aplicada em {preempt_mask.sum()} passos com preempção.")
 
 N_BINS = 20
 
@@ -130,7 +134,7 @@ print(f"Test samples      : {len(X_test)}")
 # Train model
 # ---------------------------------------------------------------------
 
-model = LGBMRegressor(
+regressor = LGBMRegressor(
     n_estimators=200,
     learning_rate=0.05,
     num_leaves=16,
@@ -139,7 +143,7 @@ model = LGBMRegressor(
     random_state=RANDOM_STATE,
 )
 
-model.fit(
+regressor.fit(
     X_train,
     y_train,
     eval_set=[(X_val, y_val)],
@@ -149,8 +153,8 @@ model.fit(
 # Evaluate
 # ---------------------------------------------------------------------
 
-y_pred = model.predict(X_test)
-y_pred_val = model.predict(X_val)
+y_pred = regressor.predict(X_test)
+y_pred_val = regressor.predict(X_val)
 
 mae = mean_absolute_error(y_test, y_pred)
 mae_val = mean_absolute_error(y_val, y_pred_val)
@@ -163,106 +167,80 @@ print(f"Test MAE: {mae:.8f}")
 # ---------------------------------------------------------------------
 
 print("\nFeature importance:")
-for name, importance in zip(X.columns, model.feature_importances_):
+for name, importance in zip(X.columns, regressor.feature_importances_):
     print(f"{name:15s}: {importance}")
 
 print(f"Mean latency: {y_test.mean():.4f}")
 print(f"MAE: {mae:.4f}")
 print(f"Relative MAE: {mae / y_test.mean():.4f}")
 
+# Exporta o Regressor
+import json
+target_gpu_cutoff = 33.0
 
+joblib.dump(regressor, os.path.join(SCRIPT_DIR, 'lgbm_oraculo.pkl'))
+print(f"\n[!] Regressor exportado com sucesso: {os.path.join(SCRIPT_DIR, 'lgbm_oraculo.pkl')}")
 
+meta = {
+    "model_type": "LGBMRegressor",
+    "overhead_p95": float(overhead_p95),
+    "suggested_gpu_cutoff": target_gpu_cutoff,
+    "test_mae": float(mae),
+    "mean_latency": float(y_test.mean()),
+    "features": list(X.columns)
+}
 
+meta_path = os.path.join(SCRIPT_DIR, "lgbm_oraculo_meta.json")
+with open(meta_path, "w") as f:
+    json.dump(meta, f, indent=4)
+print(f"[!] Metadados exportados com sucesso: {meta_path} (Corte sugerido na GPU: {target_gpu_cutoff:.4f} ms)")
 
+with open(os.path.join(SCRIPT_DIR, "lgbm_model.pkl"), "wb") as f:
+    pickle.dump(regressor, f)
 
-
-# === classifier =====================================
+# === classifier (opcional para análise) =====================================
 
 from lightgbm import LGBMClassifier
 
-model = LGBMClassifier(
+classifier = LGBMClassifier(
     n_estimators=400,
     learning_rate=0.05,
     num_leaves=32,
     random_state=42,
-    #class_weight={False: 1, True: 2},
     class_weight="balanced",
 )
 
-limite_gpu_ms = 39.23112703
-
+limite_gpu_ms = target_gpu_cutoff
 
 print(f"\n[!] Treinando Classificador com limite de corte na GPU de: {limite_gpu_ms:.4f} ms")
 
-# O classificador agora aprende a barrar requisições considerando o engasgo real da máquina
 df["is_over_slo"] = (df["lat_gpu"] > limite_gpu_ms)
+y_cls = df["is_over_slo"]
 
-y = df["is_over_slo"]
-
-X_trainval, X_test, y_trainval, y_test = train_test_split(
+X_trainval, X_test_cls, y_trainval_cls, y_test_cls = train_test_split(
     X,
-    y,
+    y_cls,
     test_size=0.10,
     random_state=RANDOM_STATE,
-    stratify=y
+    stratify=y_cls
 )
 
-X_train, X_val, y_train, y_val = train_test_split(
+X_train_cls, X_val_cls, y_train_cls, y_val_cls = train_test_split(
     X_trainval,
-    y_trainval,
+    y_trainval_cls,
     test_size=2/9,
     random_state=RANDOM_STATE,
-    stratify=y_trainval
+    stratify=y_trainval_cls
 )
 
-print(f"Training samples  : {len(X_train)}")
-print(f"Validation samples: {len(X_val)}")
-print(f"Test samples      : {len(X_test)}")
+classifier.fit(X_train_cls, y_train_cls)
 
+y_pred_cls = classifier.predict(X_test_cls)
 
-model.fit(X_train, y_train)
+from sklearn.metrics import accuracy_score, classification_report
 
-y_pred = model.predict(X_test)
+print(accuracy_score(y_test_cls, y_pred_cls))
+print(classification_report(y_test_cls, y_pred_cls))
 
-from sklearn.metrics import accuracy_score
-
-print(accuracy_score(y_test, y_pred))
-
-from sklearn.metrics import classification_report
-
-print(classification_report(y_test, y_pred))
-
-importance = pd.DataFrame({
-    "feature": X_train.columns,
-    "importance": model.feature_importances_
-})
-
-importance = importance.sort_values(
-    "importance",
-    ascending=False
-)
-
-print(importance)
-
-
-importance = pd.DataFrame({
-    "feature": X_train.columns,
-    "importance": model.booster_.feature_importance(importance_type="gain")
-})
-
-importance = importance.sort_values(
-    "importance",
-    ascending=False
-)
-
-print("\ngain importance ------------------------")
-print(importance)
-
-# Salva o modelo em disco
-joblib.dump(model, 'lgbm_oraculo.pkl')
-print("\nModelo exportado com sucesso: lgbm_oraculo.pkl")
-
-print(model.predict([[4000, 500, 398, 398, 0]]))
-
-with open("lgbm_model.pkl", "wb") as f:
-    pickle.dump(model, f)
+# Salva classificador separadamente caso desejado para inspeção
+joblib.dump(classifier, os.path.join(SCRIPT_DIR, 'lgbm_classificador.pkl'))

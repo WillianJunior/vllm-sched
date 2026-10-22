@@ -278,13 +278,31 @@ class Scheduler(SchedulerInterface):
         
         self.is_profiling = os.environ.get("VLLM_PROFILING", "0") == "1"
         self.ml_model = None
-        # Substitua pelo caminho absoluto real onde você salvou o modelo
-        model_path = "/snfs2/guilherme.farany/vllm-sched/studies/5-lat-budget/lgbm_oraculo.pkl" 
-        
+        self.lat_target = 33.0  # Fallback na GPU (~33ms)
+        self.deferred_req_counts = defaultdict(int)
+
+        model_path = "/snfs2/guilherme.farany/vllm-sched/studies/5-lat-budget/lgbm_oraculo.pkl"
+        meta_path = "/snfs2/guilherme.farany/vllm-sched/studies/5-lat-budget/lgbm_oraculo_meta.json"
+
+        # Fallback para caminho relativo no workspace local
+        if not os.path.exists(model_path):
+            local_model = os.path.join(os.path.dirname(__file__), "../studies/5-lat-budget/lgbm_oraculo.pkl")
+            if os.path.exists(local_model):
+                model_path = local_model
+                meta_path = os.path.join(os.path.dirname(__file__), "../studies/5-lat-budget/lgbm_oraculo_meta.json")
+
         if not self.is_profiling:
             if os.path.exists(model_path):
                 self.ml_model = joblib.load(model_path)
-                print(f"[ML-ADMISSION] Modelo carregado com sucesso: {model_path}")
+                model_type = type(self.ml_model).__name__
+                self.is_classifier_model = "Classifier" in model_type
+                print(f"[ML-ADMISSION] Modelo carregado com sucesso: {model_path} (Tipo: {model_type}, Modo: {'Classificador' if self.is_classifier_model else 'Regressor'})")
+
+                if "VLLM_LAT_TARGET" in os.environ:
+                    self.lat_target = float(os.environ["VLLM_LAT_TARGET"])
+                    print(f"[ML-ADMISSION] Override de lat_target via VLLM_LAT_TARGET: {self.lat_target:.2f}ms")
+                else:
+                    print(f"[ML-ADMISSION] Usando cutoff na GPU: {self.lat_target:.2f}ms")
             else:
                 print(f"[ML-ADMISSION] AVISO: Modelo não encontrado em {model_path}. Operando sem ML.")
         else:
@@ -298,6 +316,91 @@ class Scheduler(SchedulerInterface):
         self.prev_decode_reqs = -1
         self.prev_prefill_reqs = -1
         self.prev_used_blocks = -1
+        self.prev_kv_usage = 0.0
+        self.prev_num_preemptions = 0
+
+    def _build_feature_row(
+        self,
+        used_tokens: int,
+        decode_reqs: int,
+        prefill_reqs: int,
+        kv_blocks_used: int,
+        batch_size: int,
+        kv_cache_usage: float,
+    ) -> list[float]:
+        n_feats = getattr(self.ml_model, "n_features_in_", 5)
+        if n_feats == 5:
+            return [used_tokens, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]
+        return [used_tokens, decode_reqs, prefill_reqs, kv_blocks_used, batch_size, kv_cache_usage]
+
+    def _find_safe_prefill_chunk(
+        self,
+        request: Request,
+        num_tokens_desired: int,
+        token_budget: int,
+        num_decode_reqs: int,
+    ) -> tuple[int | None, float, bool]:
+        """Avalia com o modelo ML se num_tokens_desired cabe no orcamento de latencia.
+        Caso contrario, testa candidatos fatiados (chunked prefill) para encontrar
+        o maior chunk que respeita o SLO (<= self.lat_target).
+        
+        Retorna:
+            (chunk_escolhido, predicted_lat, foi_fatiado)
+            Se nenhum chunk couber no SLO, retorna (None, predicted_lat, True).
+        """
+        if getattr(self, 'ml_model', None) is None:
+            return num_tokens_desired, 0.0, False
+
+        used_before = self.max_num_scheduled_tokens - token_budget
+        decode_reqs = num_decode_reqs
+        is_in_running = (request in self.running)
+        prefill_reqs = (len(self.running) - num_decode_reqs) + (0 if is_in_running else 1)
+        batch_size = len(self.running) + (0 if is_in_running else 1)
+        kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
+        kv_cache_usage = float(self.kv_cache_manager.usage)
+
+        # Testa primeiro o tamanho desejado completo
+        feats_full = [self._build_feature_row(
+            used_before + num_tokens_desired, decode_reqs, prefill_reqs,
+            kv_blocks_used, batch_size, kv_cache_usage
+        )]
+        pred_full = self.ml_model.predict(feats_full)[0]
+
+        if getattr(self, 'is_classifier_model', False):
+            if int(pred_full) == 0:
+                return num_tokens_desired, 0.0, False
+            pred_lat_full = 999.0
+        else:
+            pred_lat_full = float(pred_full)
+            if pred_lat_full <= self.lat_target:
+                return num_tokens_desired, pred_lat_full, False
+
+        # Se estourar o SLO, avalia candidatos fatiados
+        candidates = [1536, 1024, 768, 512, 384, 256, 128, 64]
+        valid_candidates = [c for c in candidates if c < num_tokens_desired and c <= token_budget]
+
+        if not valid_candidates:
+            return None, pred_lat_full, True
+
+        batch_feats = [
+            self._build_feature_row(
+                used_before + c, decode_reqs, prefill_reqs,
+                kv_blocks_used, batch_size, kv_cache_usage
+            ) for c in valid_candidates
+        ]
+        preds = self.ml_model.predict(batch_feats)
+
+        for c, p in zip(valid_candidates, preds):
+            if getattr(self, 'is_classifier_model', False):
+                if int(p) == 0:
+                    return c, 0.0, True
+            else:
+                p_lat = float(p)
+                if p_lat <= self.lat_target:
+                    return c, p_lat, True
+
+        # Se nem o menor chunk (64) couber no alvo de latencia:
+        return None, pred_lat_full, True
 
     def _mamba_block_aligned_split(
         self,
@@ -375,9 +478,9 @@ class Scheduler(SchedulerInterface):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
-        if self.is_profiling or scheduled_timestamp-self.prev_sched_time > 0.058:
+        if self.is_profiling or scheduled_timestamp-self.prev_sched_time > 0.039:
             print(f"[sched][lat_prof][step{self.sched_step}] lat: {scheduled_timestamp-self.prev_sched_time}", flush=True)
-            print(f"[sched][lat_prof][step{self.sched_step}] used_tokens_budget: {self.prev_used_token_budget} kv_blocks_used: {self.prev_used_blocks} decode_reqs: {self.prev_decode_reqs} batch_size: {self.prev_batch_size} prefill_reqs: {self.prev_prefill_reqs}", flush = True)
+            print(f"[sched][lat_prof][step{self.sched_step}] used_tokens_budget: {self.prev_used_token_budget} kv_blocks_used: {self.prev_used_blocks} decode_reqs: {self.prev_decode_reqs} batch_size: {self.prev_batch_size} prefill_reqs: {self.prev_prefill_reqs} kv_cache_usage: {self.prev_kv_usage:.4f} num_preemptions: {self.prev_num_preemptions}", flush=True)
         self.prev_sched_time = scheduled_timestamp
         self.sched_step += 1
 
@@ -412,6 +515,18 @@ class Scheduler(SchedulerInterface):
             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
             num_new_tokens = min(num_new_tokens, int(token_budget/DP_factor))
+
+            # Fatiamento dinamico para continuacao de prefill em running
+            if (
+                request.num_computed_tokens < request.num_prompt_tokens
+                and num_new_tokens > 64
+                and getattr(self, 'ml_model', None) is not None
+            ):
+                safe_chunk, _, _ = self._find_safe_prefill_chunk(
+                    request, num_new_tokens, token_budget, len(self.running)
+                )
+                if safe_chunk is not None and safe_chunk > 0:
+                    num_new_tokens = safe_chunk
 
             # Make sure the input position does not exceed the max model len.
             # This is necessary when using spec decoding.
@@ -566,6 +681,7 @@ class Scheduler(SchedulerInterface):
         skipped_waiting_requests = create_request_queue(self.policy)
 
         num_decode_reqs = len(self.running)
+        init_waiting_token_budget = token_budget
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
@@ -706,42 +822,33 @@ class Scheduler(SchedulerInterface):
                     assert num_new_tokens > 0
                     
                     if getattr(self, 'ml_model', None) is not None:
-                        if num_decode_reqs > 0:
-                            used_token_budget = (self.max_num_scheduled_tokens - token_budget) + num_new_tokens
-                            
-                            if request.num_computed_tokens == 0:
-                                prefill_reqs = (len(self.running) - num_decode_reqs) + 1
-                                decode_reqs = num_decode_reqs
-                            else:
-                                prefill_reqs = len(self.running) - num_decode_reqs
-                                decode_reqs = num_decode_reqs + 1
-                                
-                            batch_size = len(self.running) + 1
-                            kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
-                            
-                            features = [[used_token_budget, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]]
-                            #is_over_slo = self.ml_model.predict(features)[0]
-                            
-                            # Usamos predict_proba para ter a margem de controle
-                            prob_estourar = self.ml_model.predict_proba(features)[0][1]
-                                                        
-                            # # Threshold dinâmico relaxado (exigindo alta confiança para barrar)
-                            if self.sched_step <= 15:
-                                threshold = 1.1
-                            elif decode_reqs >= 300:
-                                threshold = 0.30  # Máquina cheia
-                            elif decode_reqs >= 150:
-                                threshold = 0.60  
-                            else:
-                                threshold = 0.90  # Máquina leve
-                            
-                            is_over_slo = prob_estourar > threshold
-                            
-                            if is_over_slo:
-                                print(f"[ML-ADMISSION][step{self.sched_step}] Risco de SLO ({prob_estourar*100:.1f}% > {threshold*100:.1f}% limite). Barrando req {request.request_id}.")
-                                print(f"[ML-ADMISSION][step{self.sched_step}] used_tokens_budget: {self.max_num_scheduled_tokens - token_budget} kv_blocks_used: { self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()} decode_reqs: {num_decode_reqs} batch_size: {len(self.running)} prefill_reqs: {len(self.running) - num_decode_reqs}")
+                        safe_chunk, pred_lat, was_chunked = self._find_safe_prefill_chunk(
+                            request, num_new_tokens, token_budget, num_decode_reqs
+                        )
 
-                                break # Interrompe a admissão
+                        if safe_chunk is not None and safe_chunk > 0:
+                            if was_chunked:
+                                print(f"[ML-ADMISSION][step{self.sched_step}] Fatiando prefill req {request.request_id}: "
+                                      f"{num_new_tokens} -> {safe_chunk} tokens (pred: {pred_lat:.2f}ms <= {self.lat_target:.2f}ms).")
+                            num_new_tokens = safe_chunk
+                            self.deferred_req_counts.pop(request.request_id, None)
+                        else:
+                            # Nem o menor chunk atende ao SLO sob a carga atual
+                            starvation_limit = int(os.environ.get("VLLM_STARVATION_LIMIT", "20"))
+                            deferred_count = self.deferred_req_counts[request.request_id]
+
+                            if len(self.running) > 0 and deferred_count < starvation_limit:
+                                self.deferred_req_counts[request.request_id] += 1
+                                print(f"[ML-ADMISSION][step{self.sched_step}] Risco de SLO mesmo com fatiamento ({pred_lat:.2f}ms > {self.lat_target:.2f}ms). "
+                                      f"Barrando req {request.request_id} (defer #{deferred_count + 1}/{starvation_limit}).")
+                                break
+                            else:
+                                # Anti-starvation: admite com chunk seguro minimo (128) para fazer progresso sem congelar a GPU
+                                starvation_chunk = min(num_new_tokens, 128)
+                                print(f"[ML-ADMISSION][step{self.sched_step}] Anti-starvation ativado para req {request.request_id} "
+                                      f"(esperou {deferred_count} passos). Admitindo com chunk de {starvation_chunk} tokens!")
+                                num_new_tokens = starvation_chunk
+                                self.deferred_req_counts.pop(request.request_id, None)
 
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
@@ -987,13 +1094,15 @@ class Scheduler(SchedulerInterface):
 
         #print(f"[fcfs] sched_time {time.monotonic() - scheduled_timestamp}")
         if len(preempted_reqs) > 0:
-            print("[sched][PREEMPTION] aaaaaaaaaaaaaaa num reqs preempted: {len(preempted_reqs)}")
+            print(f"[sched][PREEMPTION] num reqs preempted: {len(preempted_reqs)}")
 
         self.prev_batch_size = len(self.running)
         self.prev_used_token_budget = self.max_num_scheduled_tokens - token_budget
         self.prev_decode_reqs = num_decode_reqs
         self.prev_prefill_reqs = len(self.running) - num_decode_reqs
         self.prev_used_blocks = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
+        self.prev_kv_usage = float(self.kv_cache_manager.usage)
+        self.prev_num_preemptions = len(preempted_reqs)
 
         return scheduler_output
 

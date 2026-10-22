@@ -5,14 +5,14 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 
 conda activate ../../envs/vllm-0.16.0-itl/
 
-LOG_FILE="metricas.log" 
+LOG_FILE="Profiling_100k_multi_turn_new.log" 
 
 echo "Lendo log e construindo base de dados..."
 
 awk '
 BEGIN {
     # Imprime o cabeçalho
-    print "step lat_escalonador lat_gpu batch_size token_budget decode_reqs prefill_reqs kv_blocks_used" > "training_data.txt"
+    print "step lat_escalonador lat_gpu batch_size token_budget decode_reqs prefill_reqs kv_blocks_used kv_cache_usage num_preemptions" > "training_data.txt"
 }
 /\[lat_prof_gpu\]/ {
     # 1. A GPU trabalha PRIMEIRO e cospe a latência física
@@ -33,10 +33,12 @@ BEGIN {
     if(match($0, /decode_reqs: ([-0-9]+)/, c)) dc = c[1]
     if(match($0, /batch_size: ([-0-9]+)/, d)) bs = d[1]
     if(match($0, /prefill_reqs: ([-0-9]+)/, e)) pf = e[1]
+    if(match($0, /kv_cache_usage: ([-0-9.]+)/, f)) ku = f[1]
+    if(match($0, /num_preemptions: ([-0-9.]+)/, g)) np = g[1]
     
     # Como essa é a última peça do quebra-cabeça, juntamos tudo e salvamos!
     if (bs != "-1" && current_lat_gpu != "") {
-        print step_id, (lat_esc[step_id] * 1000), current_lat_gpu, bs, tb, dc, pf, kv >> "training_data.txt"
+        print step_id, (lat_esc[step_id] * 1000), current_lat_gpu, bs, tb, dc, pf, kv, ku, np >> "training_data.txt"
         
         # Limpa o current_lat_gpu para o próximo ciclo
         current_lat_gpu = ""
@@ -45,5 +47,5 @@ BEGIN {
 
 echo "Base construída! Iniciando o treinamento do modelo..."
 
-python3 clean_training_data.py
+#python3 clean_training_data.py
 python3 estimate_lat.py
