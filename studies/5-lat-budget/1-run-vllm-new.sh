@@ -22,7 +22,7 @@ KV_MEM=0.95
 
 export VLLM_LOG_STATS_INTERVAL=1
 python3 -c "import vllm.v1.worker.gpu_model_runner as mr; print('\n>>> O ARQUIVO REAL SENDO USADO É:', mr.__file__, '\n')"
-vllm serve /snfs1/llm-models/llama-3.2-3B-Instruct/ --host localhost --port 8000 --gpu-memory-utilization $KV_MEM --max-model-len 8000 --max-num-seqs $MNS --tensor-parallel-size 1 $OFFLOADING --disable-hybrid-kv-cache-manager $SCHED --no-enable-prefix-caching --max-num-batched-tokens $2 --disable-uvicorn-access-log
+vllm serve /snfs1/llm-models/llama-3.2-3B-Instruct/ --host localhost --port 8000 --gpu-memory-utilization $KV_MEM --max-model-len 8000 --max-num-seqs $MNS --tensor-parallel-size 1 $OFFLOADING --disable-hybrid-kv-cache-manager $SCHED --enable-prefix-caching --max-num-batched-tokens $2 --disable-uvicorn-access-log
 #new_scheduler.Scheduler
 
 
