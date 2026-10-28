@@ -5,9 +5,26 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 
 conda activate ../../envs/vllm-0.16.0-itl/
 
-LOG_FILE="Profiling_100k_multi_turn_new.log" 
+# Localiza o arquivo de log (no diretorio atual, no pai ou na raiz do repo)
+LOG_FILE="${LOG_FILE:-Profiling_100k_multi_turn_new.log}"
+if [ ! -f "$LOG_FILE" ]; then
+    if [ -f "../../Profiling_100k_multi_turn_new.log" ]; then
+        LOG_FILE="../../Profiling_100k_multi_turn_new.log"
+    elif [ -f "../Profiling_100k_multi_turn_new.log" ]; then
+        LOG_FILE="../Profiling_100k_multi_turn_new.log"
+    elif [ -f "$HOME/Profiling_100k_multi_turn_new.log" ]; then
+        LOG_FILE="$HOME/Profiling_100k_multi_turn_new.log"
+    fi
+fi
 
-echo "Lendo log e construindo base de dados..."
+if [ ! -f "$LOG_FILE" ]; then
+    echo "[ERRO] Arquivo de profiling '$LOG_FILE' não foi encontrado!"
+    echo "Verifique se o profiling foi executado ou forneça o caminho: LOG_FILE=/caminho/log.log bash 3-run-training.sh"
+    exit 1
+fi
+
+echo "Usando arquivo de profiling: $LOG_FILE"
+echo "Lendo log e construindo base de dados em training_data.txt..."
 
 awk '
 BEGIN {
@@ -46,6 +63,9 @@ BEGIN {
 }' $LOG_FILE
 
 echo "Base construída! Iniciando o treinamento do modelo..."
+
+export VLLM_PREEMPTION_PENALTY="${VLLM_PREEMPTION_PENALTY:-50.0}"
+export VLLM_PREEMPTION_QUOTA="${VLLM_PREEMPTION_QUOTA:-3000}"
 
 #python3 clean_training_data.py
 python3 estimate_lat.py

@@ -31,12 +31,67 @@ df = df.dropna()
 
 #df = df.iloc[:4000].copy()
 
+if "step" in df.columns:
+    df = df.sort_values("step").reset_index(drop=True)
+
 df["batch_size"] = df["decode_reqs"] + df["prefill_reqs"]
 
-# Data is shifted. latency reporting is broken since scheduler is async
-# workarround: shift by 1. most of the times the latency of a step is actually from the previous step...
-# df["lat"] = df["lat"].shift(1)
-# df = df.iloc[1:]
+# Deriva blocos livres e headroom_ratio (blocos livres por decode ativo)
+valid_usage = df["kv_cache_usage"] > 0.05
+if valid_usage.any():
+    estimated_total_blocks = float((df.loc[valid_usage, "kv_blocks_used"] / df.loc[valid_usage, "kv_cache_usage"]).median())
+else:
+    estimated_total_blocks = 12787.0
+
+df["free_blocks"] = (estimated_total_blocks - df["kv_blocks_used"]).clip(lower=0)
+df["headroom_ratio"] = df["free_blocks"] / df["decode_reqs"].clip(lower=1)
+
+# Backward Labeling: "Última Gota D'água" (Last-Admit Attribution)
+# Quando ocorre preempção no passo t, identifica o passo anterior (t-k) de admissão de prefill
+# que saturou a memória e atribui a penalidade a ele.
+LOOKBACK_WINDOW = int(os.environ.get("VLLM_LOOKBACK_WINDOW", "15"))
+preemption_penalty = float(os.environ.get("VLLM_PREEMPTION_PENALTY", "50.0"))
+
+penalized_indices = set()
+has_preemption = "num_preemptions" in df.columns
+
+if has_preemption:
+    preempt_indices = df.index[df["num_preemptions"] > 0].tolist()
+    print(f"\n[Backward-Labeling] Passos com preempção detectados: {len(preempt_indices)}")
+
+    for idx in preempt_indices:
+        found = False
+        # 1. Procura o prefill mais recente admitido sob risco (headroom_ratio < 1.5 ou kv_cache_usage >= 0.90)
+        for k in range(1, LOOKBACK_WINDOW + 1):
+            prev_idx = idx - k
+            if prev_idx < 0:
+                break
+            if df.at[prev_idx, "prefill_reqs"] > 0 and (df.at[prev_idx, "headroom_ratio"] < 1.5 or df.at[prev_idx, "kv_cache_usage"] >= 0.90):
+                penalized_indices.add(prev_idx)
+                found = True
+                break
+
+        # 2. Se não achou na zona de 90%, pega a admissão de prefill mais recente na janela
+        if not found:
+            for k in range(1, LOOKBACK_WINDOW + 1):
+                prev_idx = idx - k
+                if prev_idx < 0:
+                    break
+                if df.at[prev_idx, "prefill_reqs"] > 0:
+                    penalized_indices.add(prev_idx)
+                    break
+
+    print(f"[Backward-Labeling] Passos de admissão penalizados retroativamente ('Última Gota D\'água'): {len(penalized_indices)}")
+    df["is_penalized_admission"] = False
+    if penalized_indices:
+        df.loc[list(penalized_indices), "is_penalized_admission"] = True
+
+# Define o alvo lat_gpu com a penalidade apenas nos passos de admissão culpados
+df["target_lat_gpu"] = df["lat_gpu"].copy()
+if has_preemption and df["is_penalized_admission"].any():
+    penalized_mask = df["is_penalized_admission"]
+    df.loc[penalized_mask, "target_lat_gpu"] += preemption_penalty
+    print(f"[!] Penalidade retroativa (+{preemption_penalty:.1f} ms) aplicada em {penalized_mask.sum()} passos de admissão de risco.")
 
 df["overhead_ms"] = df["lat_escalonador"] - df["lat_gpu"]
 
@@ -45,53 +100,62 @@ print(f"\n[!] Overhead P95 do sistema: {overhead_p95:.4f} ms")
 print(f"[!] Sugestão de corte pro Escalonador: 55ms - {overhead_p95:.4f} ms\n")
 # ----------------------------------------------
 
-print(df)
-
 N_BINS = 20
 MAX_PER_BUCKET = 2000
+PREEMPTION_QUOTA = int(os.environ.get("VLLM_PREEMPTION_QUOTA", "3000"))
 
-# Compute bucket edges
-counts, edges = np.histogram(df["lat_gpu"], bins=N_BINS)
+if has_preemption and df["is_penalized_admission"].any():
+    df_penalized = df[df["is_penalized_admission"]].copy()
+    df_normal = df[~df["is_penalized_admission"]].copy()
+    print(f"\n[Estratificação] Passos normais: {len(df_normal)}")
+    print(f"[Estratificação] Passos de admissão penalizados: {len(df_penalized)}")
 
-# Assign each row to a bucket (0..19)
-bucket = np.digitize(df["lat_gpu"], edges[1:-1], right=False)
-df["bucket"] = bucket
+    # 1. Downsampling em buckets apenas para os passos normais
+    counts, edges = np.histogram(df_normal["target_lat_gpu"], bins=N_BINS)
+    bucket = np.digitize(df_normal["target_lat_gpu"], edges[1:-1], right=False)
+    df_normal["bucket"] = bucket
 
-# Keep all rows except cap buckets 0 and 1
-dfs = []
+    dfs = []
+    for b in range(N_BINS):
+        rows = df_normal[df_normal["bucket"] == b]
+        if b < 2 and len(rows) > MAX_PER_BUCKET:
+            rows = rows.sample(MAX_PER_BUCKET, random_state=42)
+        dfs.append(rows)
 
-for b in range(N_BINS):
-    rows = df[df["bucket"] == b]
+    df_normal_sampled = pd.concat(dfs).drop(columns="bucket")
 
-    if b < 2 and len(rows) > MAX_PER_BUCKET:
-        rows = rows.sample(MAX_PER_BUCKET, random_state=42)
+    # 2. Amostragem da cota controlada de admissões penalizadas
+    if len(df_penalized) > PREEMPTION_QUOTA:
+        df_penalized_sampled = df_penalized.sample(PREEMPTION_QUOTA, random_state=42)
+    else:
+        df_penalized_sampled = df_penalized
+    print(f"[Estratificação] Amostras de admissão penalizada selecionadas para treino: {len(df_penalized_sampled)} (de {len(df_penalized)})")
+    df = pd.concat([df_normal_sampled, df_penalized_sampled])
+else:
+    df_normal = df.copy()
+    counts, edges = np.histogram(df_normal["target_lat_gpu"], bins=N_BINS)
+    bucket = np.digitize(df_normal["target_lat_gpu"], edges[1:-1], right=False)
+    df_normal["bucket"] = bucket
+    dfs = []
+    for b in range(N_BINS):
+        rows = df_normal[df_normal["bucket"] == b]
+        if b < 2 and len(rows) > MAX_PER_BUCKET:
+            rows = rows.sample(MAX_PER_BUCKET, random_state=42)
+        dfs.append(rows)
+    df = pd.concat(dfs).drop(columns="bucket")
 
-    dfs.append(rows)
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-df_orig = df.copy()
-df = (
-    pd.concat(dfs)
-      .drop(columns="bucket")
-      .sample(frac=1, random_state=42)   # shuffle
-      .reset_index(drop=True)
-)
-
-print(f"Filtered dataset size: {len(df)}")
-
+print(f"\nFiltered dataset size: {len(df)}")
+if has_preemption and "is_penalized_admission" in df.columns:
+    preempt_pct = df["is_penalized_admission"].mean() * 100
+    print(f"[Estratificação] Proporção de admissões penalizadas no dataset final: {preempt_pct:.2f}% ({df['is_penalized_admission'].sum()} amostras)")
 
 print(df)
 
-# Features and target
-X = df[["token_budget", "decode_reqs", "prefill_reqs", "kv_blocks_used", "batch_size", "kv_cache_usage"]]
-#X = df[["token_budget"]]
-
-
-y = df["lat_gpu"].copy()
-preemption_penalty = float(os.environ.get("VLLM_PREEMPTION_PENALTY", "50.0"))
-if "num_preemptions" in df.columns:
-    preempt_mask = df["num_preemptions"] > 0
-    y.loc[preempt_mask] += preemption_penalty
-    print(f"\n[!] Penalidade de preempção (+{preemption_penalty:.1f} ms) aplicada em {preempt_mask.sum()} passos com preempção.")
+# Features (7 features incluindo headroom_ratio) e target
+X = df[["token_budget", "decode_reqs", "prefill_reqs", "kv_blocks_used", "batch_size", "kv_cache_usage", "headroom_ratio"]]
+y = df["target_lat_gpu"].copy()
 
 N_BINS = 20
 
@@ -214,7 +278,7 @@ limite_gpu_ms = target_gpu_cutoff
 
 print(f"\n[!] Treinando Classificador com limite de corte na GPU de: {limite_gpu_ms:.4f} ms")
 
-df["is_over_slo"] = (df["lat_gpu"] > limite_gpu_ms)
+df["is_over_slo"] = (y > limite_gpu_ms)
 y_cls = df["is_over_slo"]
 
 X_trainval, X_test_cls, y_trainval_cls, y_test_cls = train_test_split(

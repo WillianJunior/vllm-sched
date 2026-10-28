@@ -296,7 +296,15 @@ class Scheduler(SchedulerInterface):
                 self.ml_model = joblib.load(model_path)
                 model_type = type(self.ml_model).__name__
                 self.is_classifier_model = "Classifier" in model_type
-                print(f"[ML-ADMISSION] Modelo carregado com sucesso: {model_path} (Tipo: {model_type}, Modo: {'Classificador' if self.is_classifier_model else 'Regressor'})")
+                n_feats = getattr(self.ml_model, "n_features_in_", 0)
+                print(f"[ML-ADMISSION] Modelo carregado com sucesso: {model_path} (Tipo: {model_type}, Features: {n_feats}, Modo: {'Classificador' if self.is_classifier_model else 'Regressor'})")
+
+                if n_feats != 7:
+                    raise RuntimeError(
+                        f"[ML-ADMISSION] ERRO CRÍTICO: O modelo '{model_path}' possui {n_feats} features, "
+                        f"mas o escalonador exige exatamente 7 features (incluindo headroom_ratio). "
+                        f"Por favor, re-execute o treinamento através de 3-run-training.sh para gerar o modelo oráculo correto!"
+                    )
 
                 if "VLLM_LAT_TARGET" in os.environ:
                     self.lat_target = float(os.environ["VLLM_LAT_TARGET"])
@@ -327,11 +335,9 @@ class Scheduler(SchedulerInterface):
         kv_blocks_used: int,
         batch_size: int,
         kv_cache_usage: float,
+        headroom_ratio: float,
     ) -> list[float]:
-        n_feats = getattr(self.ml_model, "n_features_in_", 5)
-        if n_feats == 5:
-            return [used_tokens, decode_reqs, prefill_reqs, kv_blocks_used, batch_size]
-        return [used_tokens, decode_reqs, prefill_reqs, kv_blocks_used, batch_size, kv_cache_usage]
+        return [used_tokens, decode_reqs, prefill_reqs, kv_blocks_used, batch_size, kv_cache_usage, headroom_ratio]
 
     def _find_safe_prefill_chunk(
         self,
@@ -356,13 +362,15 @@ class Scheduler(SchedulerInterface):
         is_in_running = (request in self.running)
         prefill_reqs = (len(self.running) - num_decode_reqs) + (0 if is_in_running else 1)
         batch_size = len(self.running) + (0 if is_in_running else 1)
-        kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - self.kv_cache_manager.block_pool.get_num_free_blocks()
+        free_blocks = self.kv_cache_manager.block_pool.get_num_free_blocks()
+        headroom_ratio = float(free_blocks) / max(decode_reqs, 1)
+        kv_blocks_used = self.kv_cache_manager.block_pool.num_gpu_blocks - 1 - free_blocks
         kv_cache_usage = float(self.kv_cache_manager.usage)
 
         # Testa primeiro o tamanho desejado completo
         feats_full = [self._build_feature_row(
             used_before + num_tokens_desired, decode_reqs, prefill_reqs,
-            kv_blocks_used, batch_size, kv_cache_usage
+            kv_blocks_used, batch_size, kv_cache_usage, headroom_ratio
         )]
         pred_full = self.ml_model.predict(feats_full)[0]
 
@@ -385,7 +393,7 @@ class Scheduler(SchedulerInterface):
         batch_feats = [
             self._build_feature_row(
                 used_before + c, decode_reqs, prefill_reqs,
-                kv_blocks_used, batch_size, kv_cache_usage
+                kv_blocks_used, batch_size, kv_cache_usage, headroom_ratio
             ) for c in valid_candidates
         ]
         preds = self.ml_model.predict(batch_feats)

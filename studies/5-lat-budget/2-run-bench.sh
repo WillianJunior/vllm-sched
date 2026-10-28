@@ -130,5 +130,5 @@ for i, x in enumerate(data):
         --artifact-dir "$ARTIFACT_DIR" \
         --output-file "results/$RESULT_FILENAME" \
         --model "$MODEL" \
-        --concurrency "$CONCURRENCY"
+        --concurrency "${CONCURRENCY:-0}"
 fi
